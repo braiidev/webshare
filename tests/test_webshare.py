@@ -38,6 +38,24 @@ class Paths(unittest.TestCase):
         self.assertEqual(webshare.Handler.clean_filename(b"../evil.txt"), "evil.txt")
         self.assertEqual(webshare.Handler.clean_filename(b"..\\evil.txt"), "evil.txt")
 
+    def test_redact_query_token(self):
+        self.assertEqual(
+            webshare.redact_query_token("GET /api/list?token=abc123 HTTP/1.1"),
+            "GET /api/list?token=<redacted> HTTP/1.1",
+        )
+        self.assertEqual(
+            webshare.redact_query_token("POST /api/x?a=1&token=zz HTTP/1.1"),
+            "POST /api/x?a=1&token=<redacted> HTTP/1.1",
+        )
+        self.assertEqual(
+            webshare.redact_query_token("GET /api/list?path=a HTTP/1.1"),
+            "GET /api/list?path=a HTTP/1.1",
+        )
+
+    def test_server_header_hides_python_version(self):
+        self.assertEqual(webshare.Handler.sys_version, "")
+        self.assertTrue(webshare.Handler.server_version.startswith("webshare/"))
+
 
 
 
@@ -117,7 +135,11 @@ class IntegrationWebShare(unittest.TestCase):
         response.read()
         self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
         self.assertEqual(response.getheader("X-Frame-Options"), "DENY")
-        self.assertIn("Content-Security-Policy", response.headers)
+        csp = response.getheader("Content-Security-Policy")
+        self.assertIn("script-src 'self'", csp)
+        self.assertIn("object-src 'none'", csp)
+        self.assertIn("base-uri 'none'", csp)
+        self.assertIn("frame-ancestors 'none'", csp)
 
     def test_traversal_download_is_blocked(self):
         conn = self.http_connection()
@@ -205,6 +227,10 @@ class ApiIntegrationWebShare(unittest.TestCase):
         status = json.loads(response.read().decode("utf-8"))
         self.assertEqual(response.status, 200)
         self.assertEqual(status["status"], "ok")
+        # El estado no debe exponer la ruta absoluta del share.
+        self.assertIn("root_name", status)
+        self.assertNotIn("directory", status)
+        self.assertEqual(status["root_name"], Path(self.directory).name)
 
         payload = b"small API content"
         (Path(self.directory) / "api-smoke.txt").write_bytes(payload)
@@ -919,6 +945,18 @@ class UploadStreamWebShare(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(payload["error"], "token_invalid")
         self.assertFalse((Path(self.directory) / "intruso.txt").exists())
+        self.assertEqual(self.leftovers(), [])
+
+    def test_oversized_boundary_is_rejected(self):
+        boundary = "b" * 300
+        body = self.build_multipart(
+            [{"name": "file", "filename": "x.txt", "content": b"x"}],
+            boundary,
+        )
+        status, payload = self.post_upload(body, boundary, token=self.token)
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "invalid_multipart")
+        self.assertFalse((Path(self.directory) / "x.txt").exists())
         self.assertEqual(self.leftovers(), [])
 
     def test_truncated_multipart_leaves_no_temporary(self):

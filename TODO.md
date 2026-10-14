@@ -34,6 +34,13 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.11.1` — **Hardening, hallazgos menores**: (1) el token enviado por
+  query se redacta en los logs; (2) `/api/status` deja de exponer la ruta
+  absoluta (ahora `root_name`, y la UI usa eso); (3) el header `Server` no
+  revela la versión de Python; (4) CSP ampliada (`object-src`/`base-uri`/
+  `frame-ancestors` en `'none'`, `form-action 'self'`); (5) se acota el largo del
+  boundary multipart (≤ 200 bytes → `400 invalid_multipart`). 69/69 tests.
+  - estado: `HECHO` · tag `v0.11.1` (ver `git log`)
 - [x] `v0.11.0` — **Hardening (auditoría de seguridad)**: cierra los hallazgos de
   una auditoría del backend. (1) El CRUD autentica **antes** de leer el cuerpo y
   topa los formularios en 64 KiB (antes buffereaba un cuerpo arbitrario sin token:

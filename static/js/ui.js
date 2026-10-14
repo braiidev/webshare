@@ -172,10 +172,9 @@ function formatUptime(seconds) {
 /* ---------- rendering ---------- */
 
 function rootLabel() {
-  const dir = state.status && state.status.directory;
-  if (!dir) return "Inicio";
-  const parts = dir.split("/").filter(Boolean);
-  return parts.length ? parts[parts.length - 1] : "/";
+  const name = state.status && state.status.root_name;
+  if (!name) return "Inicio";
+  return name;
 }
 
 function renderBreadcrumb() {

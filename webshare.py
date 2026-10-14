@@ -17,7 +17,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.11.0"
+__version__ = "0.11.1"
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
@@ -33,6 +33,9 @@ DEFAULT_MAX_UPLOAD = 5 * 1024 * 1024 * 1024
 # Largest urlencoded CRUD body we will buffer. CRUD arguments normally travel in
 # the query string, so the body only exists for clients that still post a form.
 MAX_FORM_BYTES = 64 * 1024
+
+# Largest multipart boundary we accept (RFC 2046 recommends <= 70 octets).
+MAX_BOUNDARY_BYTES = 200
 
 # How long a connection may stay idle (no bytes) before it is closed. Bounds
 # slowloris-style connections that dribble headers or bodies.
@@ -245,6 +248,11 @@ def is_upload_temp(name):
     return str(name).startswith(UPLOAD_TEMP_PREFIX) and str(name).endswith(UPLOAD_TEMP_SUFFIX)
 
 
+def redact_query_token(text):
+    """Mask any `token=` value in a query string so it never reaches the logs."""
+    return re.sub(r"(?i)([?&]token=)[^&\s]+", r"\1<redacted>", str(text))
+
+
 def safe_relative(raw_path, root):
     if raw_path is None:
         return ""
@@ -345,8 +353,13 @@ def lexical_relative(raw_path):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = f"webshare/{__version__}"
+    # Ocultar la versión de Python en el header `Server` (fingerprinting).
+    sys_version = ""
     # Close sockets that sit idle; stops slowloris-style connections.
     timeout = CONNECTION_TIMEOUT
+
+    def version_string(self):
+        return self.server_version
 
     @property
     def share_dir(self):
@@ -638,7 +651,7 @@ class Handler(BaseHTTPRequestHandler):
             "ready": True,
             "version": __version__,
             "uptime_seconds": int(time.monotonic() - self.server.started_at),
-            "directory": str(self.server.directory),
+            "root_name": self.server.directory.name or "/",
             "bind": self.server.bind_address,
             "port": self.server.server_port,
             "read_only": read_only,
@@ -906,7 +919,7 @@ class Handler(BaseHTTPRequestHandler):
 
         boundary_match = re.search(rb'boundary=([^;]+)', content_type.encode("utf-8", "replace"))
         boundary = boundary_match.group(1).strip().strip(b'"') if boundary_match else b""
-        if not boundary:
+        if not boundary or len(boundary) > MAX_BOUNDARY_BYTES:
             self.reject_upload(
                 400, "invalid_multipart", "multipart inválido o sin boundary.", length
             )
@@ -1017,8 +1030,9 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if not getattr(self.server, "log_requests", True):
             return
+        message = redact_query_token(fmt % args)
         user_agent = self.headers.get("User-Agent", "-")
-        print(f"[webshare] {self.address_string()} - {fmt % args} UA={user_agent!r}")
+        print(f"[webshare] {self.address_string()} - {message} UA={user_agent!r}")
 
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -1028,7 +1042,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "script-src 'self'; img-src 'self' data:; font-src 'self';",
+            "script-src 'self'; img-src 'self' data:; font-src 'self'; "
+            "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; "
+            "form-action 'self';",
         )
         if not getattr(self, "_allow_cache", False):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")

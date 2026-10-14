@@ -74,7 +74,7 @@ Valores por defecto:
 - `GET /static/<archivo>` — assets locales (CSS, JS, fuentes, vendor).
 - `GET /health` — JSON con estado, uptime, versión, directorio, read-only y flags CRUD.
 - `GET /version` — JSON con la versión.
-- `GET /api/status` — alias JSON del estado (uptime, directorio, read-only, `token_required`, `crud_enabled`).
+- `GET /api/status` — alias JSON del estado (uptime, nombre de la raíz, read-only, `token_required`, `crud_enabled`). No expone la ruta absoluta.
 - `GET /api/auth` — valida el token de escritura (`200 ok` si es correcto, `403` si no).
 - `GET /api/list?path=...` — listado JSON de una carpeta.
 - `GET /api/info?path=...` — metadatos JSON de un archivo o carpeta.
@@ -176,10 +176,12 @@ valor por defecto (`~/Descargas`).
 - El token de escritura no se embebe en el HTML; vive en `sessionStorage` y se
   transmite por cabecera.
 - Headers HTTP: CSP con `script-src 'self'` (scripts externos propios),
-  `nosniff`, frame deny, referrer no. Assets estáticos con `ETag`/`304` y
-  `Cache-Control: no-cache`.
+  `object-src`/`base-uri`/`frame-ancestors` en `'none'`; `nosniff`, frame deny,
+  referrer no. El header `Server` no revela la versión de Python. Assets estáticos
+  con `ETag`/`304` y `Cache-Control: no-cache`.
+- El token pasado por query se redacta en los logs.
 - Límite de tamaño de subida (el cuerpo sobrante se descarta de forma acotada
-  antes de responder `413`).
+  antes de responder `413`), incluido el largo del boundary multipart.
 - La autenticación del CRUD ocurre **antes** de leer el cuerpo: una petición sin
   token no puede hacer que el servidor bufferice un payload arbitrario.
 - Las conexiones ociosas se cierran por timeout (mitiga slowloris) y hay un tope

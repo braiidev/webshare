@@ -14,7 +14,7 @@ externas y sin necesidad de `venv`.
 - Contador de tiempo activo dinámico.
 - API JSON para `curl` (`/api/status`, `/api/list`, `/api/info`, `/api/download`).
 - Modo solo lectura y límite de subida configurable.
-- Token opcional para escrituras.
+- Token opcional para subidas y para el CRUD (crear, renombrar, borrar).
 - Sandbox: todas las operaciones quedan dentro de la carpeta compartida.
 - Cierre limpio con `Ctrl+C`.
 
@@ -58,7 +58,7 @@ Valores por defecto:
 | `--port` | `8000` | Puerto HTTP. |
 | `--read-only` | apagado | Desactiva escrituras; las descargas siguen permitidas. |
 | `--max-upload-mb` | `5120` | Límite de subida en MB. |
-| `--token` / `WEBSHARE_TOKEN` | vacío | Token requerido para subir. |
+| `--token` / `WEBSHARE_TOKEN` | vacío | Token para subir y para el CRUD. |
 | `--quiet` | apagado | Desactiva los logs HTTP. |
 | `--update` | - | Actualiza repositorio y symlink. |
 | `--uninstall` | - | Desinstala symlink y repositorio. |
@@ -75,6 +75,27 @@ Valores por defecto:
 - `GET /api/download?path=...` — descarga en streaming (alias de `/download`).
 - `GET /download?path=...` — descarga en streaming (legacy).
 - `POST /upload` — subida multipart.
+- `POST /api/mkdir?path=<dir>` + `name` — crear carpeta (requiere token).
+- `POST /api/create?path=<dir>` + `name` — crear archivo vacío (requiere token).
+- `POST /api/rename?path=<src>` + `new_name` — renombrar (requiere token).
+- `DELETE /api/delete?path=<target>&confirm=<nombre>` — borrar archivo o carpeta vacía (requiere token; `POST` también aceptado).
+
+## CRUD (crear, renombrar, borrar)
+
+El CRUD solo se habilita si el servidor arrancó con token (`--token` o
+`WEBSHARE_TOKEN`). Sin token, el CRUD responde `403 crud_disabled` y las subidas
+siguen funcionando como siempre.
+
+El token se envía con `Authorization: Bearer <token>`, `X-Webshare-Token`, o el
+parámetro `token`.
+
+Reglas:
+
+- El borrado exige `confirm` igual al nombre exacto del recurso.
+- Las carpetas solo se borran si están vacías.
+- Nunca se borra la raíz compartida.
+- Renombrar no sobrescribe: si el destino existe, responde `409 resource_exists`.
+- Todo queda dentro del sandbox (`--dir`).
 
 ## Seguridad
 

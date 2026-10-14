@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hmac
 import html
 import json
 import os
@@ -15,7 +16,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.8.2"
+__version__ = "0.9.0"
 REPO_DIR = Path(__file__).resolve().parent
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
 BIN_PATH = Path.home() / ".local/bin/webshare"
@@ -155,13 +156,197 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
 
     def do_POST(self):
+        path = urllib.parse.urlsplit(self.path).path
+        if path == "/upload":
+            if getattr(self.server, "read_only", False):
+                self.send_error(403, "Servidor en modo solo lectura")
+                return
+            self.receive_files()
+            return
+        if path in ("/api/mkdir", "/api/create", "/api/rename", "/api/delete"):
+            self.handle_crud(path)
+            return
+        self.send_error(404, "No encontrado")
+
+    def do_DELETE(self):
+        path = urllib.parse.urlsplit(self.path).path
+        if path == "/api/delete":
+            self.handle_crud(path)
+            return
+        self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
+
+    def request_data(self):
+        combined = {}
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            length = 0
+        ctype = self.headers.get("Content-Type", "")
+        if length > 0 and ctype.startswith("application/x-www-form-urlencoded"):
+            raw = self.rfile.read(length).decode("utf-8", "replace")
+            combined.update(urllib.parse.parse_qs(raw))
+        combined.update(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query))
+        return combined
+
+    def get_crud_token(self, data):
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[len("Bearer "):].strip()
+        header = self.headers.get("X-Webshare-Token", "").strip()
+        if header:
+            return header
+        return (data.get("token", [""])[0] or "").strip()
+
+    def require_crud_token(self, data):
+        configured = getattr(self.server, "write_token", "")
+        if not configured:
+            self.send_json_error(
+                403, "crud_disabled", "CRUD deshabilitado: iniciá el servidor con --token."
+            )
+            return False
+        supplied = self.get_crud_token(data)
+        if not supplied or not hmac.compare_digest(
+            supplied.encode("utf-8"), configured.encode("utf-8")
+        ):
+            self.send_json_error(403, "token_invalid", "Token inválido o ausente.")
+            return False
+        return True
+
+    def handle_crud(self, path):
         if getattr(self.server, "read_only", False):
-            self.send_error(403, "Servidor en modo solo lectura")
+            self.send_json_error(403, "read_only", "Servidor en modo solo lectura.")
             return
-        if urllib.parse.urlsplit(self.path).path != "/upload":
-            self.send_error(404, "No encontrado")
+        data = self.request_data()
+        if not self.require_crud_token(data):
             return
-        self.receive_files()
+        if path == "/api/mkdir":
+            self.api_mkdir(data)
+        elif path == "/api/create":
+            self.api_create(data)
+        elif path == "/api/rename":
+            self.api_rename(data)
+        else:
+            self.api_delete(data)
+
+    def resolve_parent(self, raw):
+        relative = safe_relative(raw, self.share_dir)
+        if relative is None:
+            return None, None
+        parent = self.share_dir if not relative else self.share_dir / relative
+        return relative, parent
+
+    @staticmethod
+    def rel_join(base, name):
+        return name if not base else f"{base}/{name}"
+
+    def api_mkdir(self, data):
+        relative, parent = self.resolve_parent(data.get("path", [""])[0])
+        if relative is None:
+            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
+            return
+        if not parent.is_dir():
+            self.send_json_error(404, "not_directory", "No se encontró la carpeta destino.")
+            return
+        target = safe_target(parent, data.get("name", [""])[0])
+        if target is None:
+            self.send_json_error(400, "invalid_name", "Nombre inválido.")
+            return
+        try:
+            target.mkdir()
+        except FileExistsError:
+            self.send_json_error(409, "resource_exists", "Ya existe un recurso con ese nombre.")
+            return
+        except OSError:
+            self.send_json_error(500, "create_failed", "No se pudo crear la carpeta.")
+            return
+        self.send_json(201, {"created": self.rel_join(relative, target.name), "type": "directory"})
+
+    def api_create(self, data):
+        relative, parent = self.resolve_parent(data.get("path", [""])[0])
+        if relative is None:
+            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
+            return
+        if not parent.is_dir():
+            self.send_json_error(404, "not_directory", "No se encontró la carpeta destino.")
+            return
+        target = safe_target(parent, data.get("name", [""])[0])
+        if target is None:
+            self.send_json_error(400, "invalid_name", "Nombre inválido.")
+            return
+        try:
+            with target.open("xb"):
+                pass
+        except FileExistsError:
+            self.send_json_error(409, "resource_exists", "Ya existe un recurso con ese nombre.")
+            return
+        except OSError:
+            self.send_json_error(500, "create_failed", "No se pudo crear el archivo.")
+            return
+        self.send_json(201, {"created": self.rel_join(relative, target.name), "type": "file"})
+
+    def api_rename(self, data):
+        relative = safe_relative(data.get("path", [""])[0], self.share_dir)
+        if relative is None:
+            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
+            return
+        if not relative:
+            self.send_json_error(400, "cannot_rename_root", "No se puede renombrar la raíz compartida.")
+            return
+        source = self.share_dir / relative
+        if not os.path.lexists(source):
+            self.send_json_error(404, "not_found", "No se encontró el recurso a renombrar.")
+            return
+        target = safe_target(source.parent, data.get("new_name", [""])[0])
+        if target is None:
+            self.send_json_error(400, "invalid_name", "Nombre nuevo inválido.")
+            return
+        if os.path.lexists(target):
+            self.send_json_error(409, "resource_exists", "Ya existe un recurso con ese nombre.")
+            return
+        try:
+            source.rename(target)
+        except OSError:
+            self.send_json_error(500, "rename_failed", "No se pudo renombrar.")
+            return
+        parent_rel = Path(relative).parent.as_posix()
+        if parent_rel == ".":
+            parent_rel = ""
+        self.send_json(200, {"from": relative, "to": self.rel_join(parent_rel, target.name)})
+
+    def api_delete(self, data):
+        relative = safe_relative(data.get("path", [""])[0], self.share_dir)
+        if relative is None:
+            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
+            return
+        if not relative:
+            self.send_json_error(403, "cannot_delete_root", "No se puede borrar la raíz compartida.")
+            return
+        target = self.share_dir / relative
+        if not os.path.lexists(target):
+            self.send_json_error(404, "not_found", "No se encontró el recurso a borrar.")
+            return
+        confirm = (data.get("confirm", [""])[0] or "").strip()
+        if confirm != target.name:
+            self.send_json_error(
+                400, "confirmation_mismatch", "El nombre de confirmación no coincide."
+            )
+            return
+        try:
+            if target.is_dir() and not target.is_symlink():
+                if any(target.iterdir()):
+                    self.send_json_error(
+                        409, "directory_not_empty", "La carpeta no está vacía; no se borra."
+                    )
+                    return
+                target.rmdir()
+                kind = "directory"
+            else:
+                target.unlink()
+                kind = "file"
+        except OSError:
+            self.send_json_error(500, "delete_failed", "No se pudo borrar el recurso.")
+            return
+        self.send_json(200, {"deleted": relative, "type": kind})
 
     def send_json(self, status, payload):
         body = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")

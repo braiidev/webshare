@@ -44,6 +44,11 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.9.1-bis` — **fix UI**: `#uptimeBadge` en vivo (antes solo al navegar o
+  refrescar) y bordes coherentes en modo oscuro; Simplex fijaba `#eeeeee` en
+  card, list-group, nav-tabs, pagination, modal, popover y offcanvas, ahora
+  repuntados a `#3c3c3c` en dark.
+  - estado: `HECHO` · incluido en el commit/tag `v0.9.1` (ver `git log`)
 - [x] `v0.9.1` — **Frontend modular + UI CRUD**: shell estático (`static/index.html`)
   con CSS/JS propios servidos desde `/static`, sobre Bootswatch **Simplex** y
   Bootstrap Icons locales (sin CDN, sin emoji) y toggle claro/oscuro. Listado

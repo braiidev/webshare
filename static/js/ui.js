@@ -9,6 +9,8 @@ const state = {
   entries: [],
   files: [],
   status: null,
+  startedAt: null,
+  uptimeTimer: null,
   renameTarget: null,
   deleteTarget: null,
 };
@@ -139,11 +141,23 @@ async function loadStatus() {
   const version = state.status && state.status.version;
   el("versionLabel").textContent = version ? `v${version}` : "";
   if (state.status && state.status.uptime_seconds !== undefined) {
-    const badge = el("uptimeBadge");
-    badge.hidden = false;
-    badge.textContent = `Activo ${formatUptime(state.status.uptime_seconds)}`;
+    state.startedAt = Date.now() - state.status.uptime_seconds * 1000;
+    el("uptimeBadge").hidden = false;
+    paintUptime();
+    startUptimeTicker();
   }
   updateAuthUI();
+}
+
+function paintUptime() {
+  if (state.startedAt === null) return;
+  const seconds = (Date.now() - state.startedAt) / 1000;
+  el("uptimeBadge").textContent = `Activo ${formatUptime(seconds)}`;
+}
+
+function startUptimeTicker() {
+  if (state.uptimeTimer !== null) return;
+  state.uptimeTimer = window.setInterval(paintUptime, 1000);
 }
 
 function formatUptime(seconds) {

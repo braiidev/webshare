@@ -6,6 +6,54 @@ html {
   color-scheme: light dark;
 }
 
+/* Dark theme: Bootswatch Simplex hardcodes several component border variables
+   to #eeeeee for the light theme and never overrides them in dark mode, so
+   cards, lists, modals, etc. keep a bright light border on a dark background.
+   Re-point them at the dark border color so both themes stay coherent. */
+[data-bs-theme="dark"] {
+  --ws-border: #3c3c3c;
+  --bs-border-color: var(--ws-border);
+  --bs-border-color-translucent: rgba(255, 255, 255, 0.14);
+}
+
+[data-bs-theme="dark"] .card {
+  --bs-card-border-color: var(--ws-border);
+}
+
+[data-bs-theme="dark"] .list-group {
+  --bs-list-group-border-color: var(--ws-border);
+  --bs-list-group-disabled-bg: var(--bs-secondary-bg);
+}
+
+[data-bs-theme="dark"] .nav-tabs {
+  --bs-nav-tabs-border-color: var(--ws-border);
+  --bs-nav-tabs-link-hover-border-color: var(--bs-secondary-bg) var(--bs-secondary-bg) var(--ws-border);
+}
+
+[data-bs-theme="dark"] .pagination {
+  --bs-pagination-border-color: var(--ws-border);
+  --bs-pagination-disabled-border-color: var(--ws-border);
+}
+
+[data-bs-theme="dark"] .modal {
+  --bs-modal-border-color: var(--ws-border);
+  --bs-modal-header-border-color: var(--ws-border);
+  --bs-modal-footer-border-color: var(--ws-border);
+}
+
+[data-bs-theme="dark"] .popover {
+  --bs-popover-border-color: var(--ws-border);
+}
+
+[data-bs-theme="dark"] .offcanvas,
+[data-bs-theme="dark"] .offcanvas-sm,
+[data-bs-theme="dark"] .offcanvas-md,
+[data-bs-theme="dark"] .offcanvas-lg,
+[data-bs-theme="dark"] .offcanvas-xl,
+[data-bs-theme="dark"] .offcanvas-xxl {
+  --bs-offcanvas-border-color: var(--ws-border);
+}
+
 body {
   min-height: 100vh;
   display: flex;

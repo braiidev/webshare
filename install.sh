@@ -41,6 +41,10 @@ command -v python3 >/dev/null 2>&1 || die "python3 no esta instalado"
 mkdir -p "$(dirname "$BIN")"
 if [ -d "$TARGET/.git" ]; then
     step "actualizando repo existente"
+    if [ -n "$(git -C "$TARGET" status --porcelain)" ]; then
+        step "guardando cambios locales temporales"
+        git -C "$TARGET" stash push --include-untracked -m "webshare-install"
+    fi
     git -C "$TARGET" fetch --all --prune
     git -C "$TARGET" pull --ff-only
 else

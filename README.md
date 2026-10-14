@@ -87,6 +87,12 @@ Valores por defecto:
 
 > `/api/create` (crear archivo vacío) se eliminó: no hay editor de contenido.
 
+Las subidas se procesan **en streaming**: el cuerpo `multipart` se parsea por
+bloques y cada archivo se escribe a un temporal, así que nunca se carga completo
+en memoria. El límite (`--max-upload-mb`) se verifica con `Content-Length` antes
+de leer y se vuelve a aplicar durante la lectura; ante cualquier error los
+temporales se eliminan.
+
 ## CRUD (crear, renombrar, borrar)
 
 El CRUD solo se habilita si el servidor arrancó con token (`--token` o

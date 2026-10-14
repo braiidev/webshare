@@ -740,5 +740,257 @@ class MissingDirectoryWebShare(unittest.TestCase):
                     proc.wait(timeout=5)
 
 
+class UploadStreamWebShare(unittest.TestCase):
+    """Subida en streaming: orden libre, límite previo y sin temporales colgados."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8197
+        cls.directory = tempfile.mkdtemp(prefix="webshare-upload-test-")
+        cls.token = "token-de-subida"
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                "--dir",
+                cls.directory,
+                "--port",
+                str(cls.port),
+                "--token",
+                cls.token,
+                "--max-upload-mb",
+                "1",
+                "--quiet",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{cls.port}/api/status", timeout=0.5
+                ):
+                    return
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+        raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+
+    @staticmethod
+    def build_multipart(parts, boundary):
+        body = bytearray()
+        for part in parts:
+            body += f"--{boundary}\r\n".encode("ascii")
+            if part.get("filename") is not None:
+                body += (
+                    f'Content-Disposition: form-data; name="{part["name"]}"; '
+                    f'filename="{part["filename"]}"\r\n'
+                    f"Content-Type: application/octet-stream\r\n\r\n"
+                ).encode("ascii")
+            else:
+                body += (
+                    f'Content-Disposition: form-data; name="{part["name"]}"\r\n\r\n'
+                ).encode("ascii")
+            body += part["content"]
+            body += b"\r\n"
+        body += f"--{boundary}--\r\n".encode("ascii")
+        return bytes(body)
+
+    def post_upload(self, body, boundary, token=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        headers = {
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        }
+        if token:
+            headers["X-Webshare-Token"] = token
+        conn.request("POST", "/upload", body=body, headers=headers)
+        response = conn.getresponse()
+        payload = response.read()
+        status = response.status
+        conn.close()
+        try:
+            data = json.loads(payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            data = None
+        return status, data
+
+    def leftovers(self):
+        return sorted(p.name for p in Path(self.directory).glob(".webshare-upload-*"))
+
+    def test_field_order_independent_and_multiple_files(self):
+        sub = Path(self.directory) / "sub"
+        sub.mkdir()
+        boundary = "bnd-order"
+        body = self.build_multipart(
+            [
+                {"name": "file", "filename": "uno.txt", "content": b"uno"},
+                {"name": "file", "filename": "dos.txt", "content": b"dos"},
+                {"name": "current_path", "content": b"sub"},
+            ],
+            boundary,
+        )
+        status, _ = self.post_upload(body, boundary, token=self.token)
+        self.assertEqual(status, 303)
+        self.assertEqual((sub / "uno.txt").read_bytes(), b"uno")
+        self.assertEqual((sub / "dos.txt").read_bytes(), b"dos")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_token_as_form_field_without_header(self):
+        boundary = "bnd-field"
+        body = self.build_multipart(
+            [
+                {"name": "token", "content": self.token.encode("utf-8")},
+                {"name": "file", "filename": "campo.txt", "content": b"x"},
+            ],
+            boundary,
+        )
+        status, _ = self.post_upload(body, boundary)
+        self.assertEqual(status, 303)
+        self.assertTrue((Path(self.directory) / "campo.txt").is_file())
+
+    def test_bad_token_cleans_temporary_file(self):
+        boundary = "bnd-bad"
+        body = self.build_multipart(
+            [{"name": "file", "filename": "intruso.txt", "content": b"x"}],
+            boundary,
+        )
+        status, payload = self.post_upload(body, boundary, token="nope")
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], "token_invalid")
+        self.assertFalse((Path(self.directory) / "intruso.txt").exists())
+        self.assertEqual(self.leftovers(), [])
+
+    def test_truncated_multipart_leaves_no_temporary(self):
+        boundary = "bnd-trunc"
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="cortado.txt"\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("ascii")
+        body = head + b"datos sin cierre"
+        status, payload = self.post_upload(body, boundary, token=self.token)
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "invalid_multipart")
+        self.assertFalse((Path(self.directory) / "cortado.txt").exists())
+        self.assertEqual(self.leftovers(), [])
+
+    def test_missing_boundary_is_json_error(self):
+        body = b"no soy multipart"
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request(
+            "POST",
+            "/upload",
+            body=body,
+            headers={"Content-Type": "text/plain", "Content-Length": str(len(body))},
+        )
+        response = conn.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        conn.close()
+        self.assertEqual(response.status, 400)
+        self.assertEqual(payload["error"], "invalid_multipart")
+
+    def test_oversized_upload_reports_json_and_leaves_nothing(self):
+        boundary = "bnd-big"
+        body = self.build_multipart(
+            [{"name": "file", "filename": "grande.bin", "content": b"x" * (2 * 1024 * 1024)}],
+            boundary,
+        )
+        status, payload = self.post_upload(body, boundary, token=self.token)
+        self.assertEqual(status, 413)
+        self.assertEqual(payload["error"], "upload_too_large")
+        self.assertFalse((Path(self.directory) / "grande.bin").exists())
+        self.assertEqual(self.leftovers(), [])
+
+    def test_only_fields_is_rejected_without_files(self):
+        boundary = "bnd-fields"
+        body = self.build_multipart([{"name": "current_path", "content": b""}], boundary)
+        status, payload = self.post_upload(body, boundary, token=self.token)
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "no_files")
+        self.assertEqual(self.leftovers(), [])
+
+
+class ReadOnlyWebShare(unittest.TestCase):
+    """En solo lectura, la subida responde 403 JSON sin dejar colgado al cliente."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8198
+        cls.directory = tempfile.mkdtemp(prefix="webshare-readonly-test-")
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                "--dir",
+                cls.directory,
+                "--port",
+                str(cls.port),
+                "--read-only",
+                "--quiet",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{cls.port}/api/status", timeout=0.5
+                ):
+                    return
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+        raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+
+    def test_upload_rejected_as_json(self):
+        boundary = "bnd-ro"
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="x.txt"\r\n\r\n'
+        ).encode("ascii") + b"x" + f"\r\n--{boundary}--\r\n".encode("ascii")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request(
+            "POST",
+            "/upload",
+            body=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body)),
+            },
+        )
+        response = conn.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        conn.close()
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"], "read_only")
+        self.assertFalse((Path(self.directory) / "x.txt").exists())
+
+    def test_mkdir_rejected_as_json(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("POST", "/api/mkdir?path=&name=x")
+        response = conn.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        conn.close()
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"], "read_only")
+
+
 if __name__ == "__main__":
     unittest.main()

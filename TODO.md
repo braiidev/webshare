@@ -20,9 +20,6 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas planificadas, todavía no iniciadas.
 
-- [ ] `v0.10.0` — **Streaming multipart**: parser de subida con límite estricto
-  previo y limpieza garantizada de temporales.
-  - estado: `PENDIENTE`
 - [ ] `v0.10.1` — **Cobertura de symlinks y permisos** en tests de borde.
   - estado: `PENDIENTE`
 - [ ] `v1.0.0` — **Release estable**: suite completa en verde, instalador
@@ -39,6 +36,15 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.10.0` — **Streaming multipart**: parser incremental (`MultipartScanner` +
+  `LimitedReader`) que no carga el cuerpo en memoria; límite verificado con
+  `Content-Length` antes de leer y reaplicado durante la lectura; archivos
+  espooleados a `.webshare-upload-*.part` y movidos con `os.replace` (fallback
+  `EXDEV`), con limpieza garantizada de temporales en todo camino de error. Los
+  errores de subida pasan a ser JSON (`invalid_length`, `empty_upload`,
+  `invalid_multipart`, `upload_too_large`, `no_files`, `token_invalid`, `read_only`).
+  Verificado: 50 MiB con integridad OK y ~28 MiB de pico en el server. 41/41 tests.
+  - estado: `HECHO` · tag `v0.10.0` (ver `git log`)
 - [x] `v0.9.3` — **Documentación operativa + robustez de arranque**: sección
   "Ejemplos con `curl`" en `README.md` (auth, listar/descargar, mkdir, upload,
   rename, delete; clave por cabecera) y test que fija que un `--dir` inexistente

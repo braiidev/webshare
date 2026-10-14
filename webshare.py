@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import errno
 import hmac
 import json
 import os
@@ -7,6 +8,7 @@ import re
 import socket
 import subprocess
 import shutil
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -15,7 +17,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.9.3"
+__version__ = "0.10.0"
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
@@ -24,6 +26,9 @@ BIN_PATH = Path.home() / ".local/bin/webshare"
 # Upper bound of request body we are willing to drain when rejecting an
 # oversized upload, so the client can read the 413 instead of a reset.
 UPLOAD_DRAIN_LIMIT = 8 * 1024 * 1024
+
+# Fallback upload ceiling when the server object has no limit configured.
+DEFAULT_MAX_UPLOAD = 5 * 1024 * 1024 * 1024
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -43,6 +48,181 @@ CONTENT_TYPES = {
     ".woff2": "font/woff2",
     ".txt": "text/plain; charset=utf-8",
 }
+
+
+class MultipartError(Exception):
+    """A multipart body could not be parsed."""
+
+
+class UploadTooLarge(Exception):
+    """The upload grew past the configured limit while being streamed."""
+
+
+class LimitedReader:
+    """Wrap a stream so that no more than `length` bytes are ever read.
+
+    Keeps the parser from reading into a pipelined request and lets a truncated
+    body surface as EOF instead of blocking forever.
+    """
+
+    def __init__(self, stream, length):
+        self.stream = stream
+        self.remaining = max(0, length)
+
+    def read(self, size=-1):
+        if self.remaining <= 0:
+            return b""
+        if size is None or size < 0:
+            size = self.remaining
+        chunk = self.stream.read(min(size, self.remaining))
+        self.remaining -= len(chunk)
+        return chunk
+
+
+class MultipartPart:
+    """A single part of a multipart body, streamed from the scanner."""
+
+    def __init__(self, scanner, headers):
+        self._scanner = scanner
+        self._drained = False
+        self.headers = headers
+
+    def _disposition(self, key):
+        disposition = self.headers.get(b"content-disposition", b"")
+        match = re.search(rb'(?:^|;)\s*' + key + rb'="([^"]*)"', disposition)
+        return match.group(1) if match else None
+
+    @property
+    def name(self):
+        return self._disposition(b"name")
+
+    @property
+    def filename(self):
+        return self._disposition(b"filename")
+
+    def iter_bytes(self):
+        if self._drained:
+            return
+        self._drained = True
+        yield from self._scanner.iter_content()
+
+    def value(self, limit):
+        data = bytearray()
+        for chunk in self.iter_bytes():
+            data += chunk
+            if len(data) > limit:
+                raise MultipartError("campo multipart demasiado grande")
+        return bytes(data)
+
+    def save_to(self, handle):
+        written = 0
+        for chunk in self.iter_bytes():
+            handle.write(chunk)
+            written += len(chunk)
+        return written
+
+
+class MultipartScanner:
+    """Incremental scanner for `multipart/form-data` bodies.
+
+    Deliberately keeps only a small tail of the body in memory, so file parts
+    are streamed rather than buffered whole. The whole read stays bounded by the
+    limit enforced in `_pull`.
+    """
+
+    CHUNK = 65536
+    MAX_LINE = 16 * 1024
+
+    def __init__(self, stream, boundary, max_bytes):
+        self.stream = stream
+        self.boundary = bytes(boundary)
+        self.marker = b"--" + self.boundary
+        self.delimiter = b"\r\n--" + self.boundary
+        self.max_bytes = max_bytes
+        self.buffer = bytearray()
+        self.eof = False
+        self.closed = False
+        self.consumed = 0
+
+    def _pull(self):
+        if self.eof:
+            return False
+        chunk = self.stream.read(self.CHUNK)
+        if not chunk:
+            self.eof = True
+            return False
+        self.consumed += len(chunk)
+        if self.consumed > self.max_bytes:
+            raise UploadTooLarge("la subida superó el límite permitido")
+        self.buffer += chunk
+        return True
+
+    def _read_line(self):
+        while True:
+            index = self.buffer.find(b"\r\n")
+            if index != -1:
+                line = bytes(self.buffer[:index])
+                del self.buffer[: index + 2]
+                return line
+            if len(self.buffer) > self.MAX_LINE:
+                raise MultipartError("línea multipart demasiado larga")
+            if not self._pull():
+                line = bytes(self.buffer)
+                self.buffer.clear()
+                return line
+
+    def open(self):
+        """Consume the preamble until the first boundary line."""
+        while True:
+            line = self._read_line()
+            if line.startswith(self.marker):
+                if line[len(self.marker):].startswith(b"--"):
+                    raise MultipartError("cuerpo multipart vacío")
+                return
+            if self.eof and not line:
+                raise MultipartError("no se encontró el boundary inicial")
+
+    def read_headers(self):
+        headers = {}
+        while True:
+            line = self._read_line()
+            if not line:
+                return headers
+            if line[:1] in (b" ", b"\t"):
+                continue
+            if b":" not in line:
+                raise MultipartError("cabecera multipart inválida")
+            name, _, value = line.partition(b":")
+            headers[name.strip().lower()] = value.strip()
+
+    def iter_content(self):
+        """Yield the current part body, stopping right after its boundary."""
+        keep = len(self.delimiter)
+        while True:
+            index = self.buffer.find(self.delimiter)
+            if index != -1:
+                if index:
+                    yield bytes(self.buffer[:index])
+                del self.buffer[: index + len(self.delimiter)]
+                self.closed = self._read_line().startswith(b"--")
+                return
+            if len(self.buffer) > keep:
+                emit = len(self.buffer) - keep
+                yield bytes(self.buffer[:emit])
+                del self.buffer[:emit]
+            if not self._pull():
+                raise MultipartError("multipart truncado")
+
+
+def iter_multipart(stream, boundary, max_bytes):
+    """Yield `MultipartPart`s from a multipart body, draining each one."""
+    scanner = MultipartScanner(stream, boundary, max_bytes)
+    scanner.open()
+    while not scanner.closed:
+        part = MultipartPart(scanner, scanner.read_headers())
+        yield part
+        for _ in part.iter_bytes():
+            pass
 
 
 def safe_relative(raw_path, root):
@@ -181,7 +361,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/upload":
             if getattr(self.server, "read_only", False):
-                self.send_error(403, "Servidor en modo solo lectura")
+                try:
+                    length = int(self.headers.get("Content-Length", "0") or 0)
+                except ValueError:
+                    length = 0
+                self.drain_request_body(min(length, UPLOAD_DRAIN_LIMIT))
+                self.send_json_error(403, "read_only", "Servidor en modo solo lectura.")
                 return
             self.receive_files()
             return
@@ -580,102 +765,166 @@ class Handler(BaseHTTPRequestHandler):
                 break
             remaining -= len(chunk)
 
-    def receive_files(self):
-        ctype = self.headers.get("Content-Type", "")
+    # Largest non-file multipart field we are willing to buffer in memory.
+    MAX_FIELD_BYTES = 64 * 1024
+
+    def reject_upload(self, status, code, message, remaining):
+        """Drain what is left of a rejected upload (bounded) and answer JSON."""
+        self.drain_request_body(min(max(remaining, 0), UPLOAD_DRAIN_LIMIT))
+        self.send_json_error(status, code, message)
+
+    @staticmethod
+    def cleanup_paths(paths):
+        for path in paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def clean_filename(raw):
+        name = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        return os.path.basename(name.replace("\\", "/"))
+
+    def spool_part(self, part):
+        """Stream a file part to a temporary file next to the shared root."""
+        fd, temp_name = tempfile.mkstemp(
+            prefix=".webshare-upload-", suffix=".part", dir=self.share_dir
+        )
+        temp_path = Path(temp_name)
         try:
-            length = int(self.headers.get("Content-Length", "0"))
+            handle = os.fdopen(fd, "wb")
+        except OSError:
+            os.close(fd)
+            self.cleanup_paths([temp_path])
+            raise
+        try:
+            with handle:
+                part.save_to(handle)
+        except BaseException:
+            self.cleanup_paths([temp_path])
+            raise
+        return temp_path
+
+    @staticmethod
+    def move_into_place(temp_path, target):
+        try:
+            os.replace(temp_path, target)
+        except OSError as exc:
+            if getattr(exc, "errno", None) != errno.EXDEV:
+                raise
+            shutil.copyfile(temp_path, target)
+            temp_path.unlink(missing_ok=True)
+
+    def receive_files(self):
+        content_type = self.headers.get("Content-Type", "")
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
         except ValueError:
-            self.send_error(400, "Longitud inválida")
+            self.send_json_error(400, "invalid_length", "Longitud de subida inválida.")
             return
 
-        max_upload = getattr(self.server, "max_upload_bytes", 5 * 1024 * 1024 * 1024)
+        max_upload = getattr(self.server, "max_upload_bytes", DEFAULT_MAX_UPLOAD)
         if length <= 0:
-            self.send_error(400, "Solicitud de subida vacía o sin Content-Length")
+            self.send_json_error(
+                400, "empty_upload", "Solicitud de subida vacía o sin Content-Length."
+            )
             return
         if length > max_upload:
-            self.drain_request_body(min(length, UPLOAD_DRAIN_LIMIT))
-            self.send_error(
+            self.reject_upload(
                 413,
-                f"Subida demasiado grande ({length} bytes); límite: {max_upload} bytes",
+                "upload_too_large",
+                f"Subida demasiado grande ({length} bytes); límite: {max_upload} bytes.",
+                length,
             )
             return
 
-        body = self.rfile.read(length)
-        boundary_match = re.search(rb'boundary=([^;]+)', ctype.encode())
-        if not boundary_match:
-            self.send_error(400, "multipart inválido")
+        boundary_match = re.search(rb'boundary=([^;]+)', content_type.encode("utf-8", "replace"))
+        boundary = boundary_match.group(1).strip().strip(b'"') if boundary_match else b""
+        if not boundary:
+            self.reject_upload(
+                400, "invalid_multipart", "multipart inválido o sin boundary.", length
+            )
             return
 
-        boundary = boundary_match.group(1).strip().strip(b'"')
-        parts = [part for part in body.split(b"--" + boundary) if b"\r\n\r\n" in part]
-
-        current_rel = ""
-        supplied_token = ""
-        for part in parts:
-            headers, data = part.split(b"\r\n\r\n", 1)
-            if data.endswith(b"\r\n"):
-                data = data[:-2]
-            field_match = re.search(rb'name="([^"]*)"', headers)
-            if not field_match:
-                continue
-            name_value = field_match.group(1).decode("utf-8", "replace")
-            if name_value == "current_path":
-                current_rel = safe_relative(data.decode("utf-8", "replace").strip(), self.share_dir) or ""
-            elif name_value == "token":
-                supplied_token = data.decode("utf-8", "replace").strip()
+        reader = LimitedReader(self.rfile, length)
+        header_token = self.extract_token()
+        fields = {}
+        pending_files = []
+        temporary_paths = []
+        try:
+            for part in iter_multipart(reader, boundary, max_upload):
+                name = part.name
+                if name is None:
+                    continue
+                field_name = name.decode("utf-8", "replace")
+                filename = part.filename
+                if filename is None:
+                    value = part.value(self.MAX_FIELD_BYTES).decode("utf-8", "replace").strip()
+                    fields[field_name] = value
+                    continue
+                temp_path = self.spool_part(part)
+                temporary_paths.append(temp_path)
+                pending_files.append((temp_path, self.clean_filename(filename)))
+        except UploadTooLarge:
+            self.cleanup_paths(temporary_paths)
+            self.reject_upload(
+                413, "upload_too_large", "La subida superó el límite permitido.", reader.remaining
+            )
+            return
+        except MultipartError as exc:
+            self.cleanup_paths(temporary_paths)
+            self.reject_upload(400, "invalid_multipart", str(exc), reader.remaining)
+            return
+        except OSError:
+            self.cleanup_paths(temporary_paths)
+            self.reject_upload(
+                500, "upload_failed", "No se pudo procesar la subida.", reader.remaining
+            )
+            return
 
         if self.token_configured():
-            candidate = supplied_token or self.extract_token()
-            if not hmac.compare_digest(
+            candidate = fields.get("token", "") or header_token
+            if not candidate or not hmac.compare_digest(
                 candidate.encode("utf-8"), self.server.write_token.encode("utf-8")
             ):
-                self.send_error(403, "Token inválido en la subida")
+                self.cleanup_paths(temporary_paths)
+                self.send_json_error(403, "token_invalid", "Token inválido o ausente en la subida.")
                 return
 
+        current_rel = safe_relative(fields.get("current_path", ""), self.share_dir)
+        if current_rel is None:
+            self.cleanup_paths(temporary_paths)
+            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
+            return
         if current_rel:
             resolved_dir = (self.share_dir / current_rel).resolve()
             if self.share_dir.resolve() not in resolved_dir.parents or not resolved_dir.is_dir():
-                self.send_error(403, "Directorio no permitido")
+                self.cleanup_paths(temporary_paths)
+                self.send_json_error(403, "path_forbidden", "Directorio no permitido.")
                 return
             target_dir = resolved_dir
         else:
             target_dir = self.share_dir
 
         uploaded = []
-        for part in parts:
-            headers, data = part.split(b"\r\n\r\n", 1)
-            if data.endswith(b"\r\n"):
-                data = data[:-2]
-
-            field_match = re.search(rb'name="([^"]*)"', headers)
-            if not field_match or field_match.group(1) != b"file":
-                continue
-
-            filename_match = re.search(rb'filename="([^"]*)"', headers)
-            if not filename_match:
-                continue
-
-            raw_name = filename_match.group(1).decode("utf-8", "replace")
-            filename = os.path.basename(raw_name.replace("\\", "/"))
-            if not filename or filename in {".", ".."}:
-                continue
-
-            target = unique_path(target_dir, filename)
-            temporary_name = f".{target.name}.tmp"
-            temporary_path = target.parent / temporary_name
-            try:
-                temporary_path.write_bytes(data)
-                os.replace(temporary_path, target)
+        try:
+            for temp_path, filename in pending_files:
+                if not filename or filename in {".", ".."}:
+                    temp_path.unlink(missing_ok=True)
+                    continue
+                target = unique_path(target_dir, filename)
+                self.move_into_place(temp_path, target)
                 uploaded.append(target.name)
-            except (OSError, RuntimeError):
-                try:
-                    temporary_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                raise
+        except OSError:
+            self.cleanup_paths(temporary_paths)
+            self.send_json_error(500, "upload_failed", "No se pudo guardar el archivo.")
+            return
+        finally:
+            self.cleanup_paths(temporary_paths)
 
         if not uploaded:
-            self.send_error(400, "No se subió ningún archivo válido")
+            self.send_json_error(400, "no_files", "No se subió ningún archivo válido.")
             return
 
         redirect = "/?uploaded=1"

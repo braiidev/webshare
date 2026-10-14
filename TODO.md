@@ -41,10 +41,10 @@
 
 ## v0.5 — API y operación
 
-- [ ] `/health` en JSON.
-- [ ] `--read-only`.
-- [ ] Token opcional para escrituras.
-- [ ] Logging configurable por verbosidad.
+- [x] `/health` en JSON.
+- [x] `--read-only`.
+- [x] Token opcional para escrituras (`--token`, env WEBSHARE_TOKEN).
+- [x] Logging configurable por verbosidad (`--quiet`).
 
 ## v1.0 — Estable
 

@@ -20,6 +20,8 @@ LAN. Está escrito únicamente con la librería estándar de Python.
 webshare
 webshare --port 8080
 webshare --dir /carpeta/a/compartir --bind 0.0.0.0
+webshare --token "mi-token-secreto"
+WEBSHARE_TOKEN=... webshare
 ```
 
 Valores por defecto:

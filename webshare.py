@@ -15,7 +15,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 REPO_DIR = Path(__file__).resolve().parent
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
 BIN_PATH = Path.home() / ".local/bin/webshare"
@@ -379,6 +379,7 @@ class Handler(BaseHTTPRequestHandler):
         <span><strong>Directorio:</strong> {html.escape(str(target))}</span>
         <span><strong>Puerto:</strong> {self.server.server_port}</span>
         <span><strong>Activo:</strong> <span id="uptime">00:00:00</span></span>
+        {f'<span><strong>Token:</strong> activo en subidas</span>' if getattr(self.server, "write_token", "") else ""}
       </div>
     </header>
 
@@ -401,6 +402,7 @@ class Handler(BaseHTTPRequestHandler):
         {status}
         <form id="uploadForm" method="post" action="/upload" enctype="multipart/form-data">
           <input type="hidden" name="current_path" value="{html.escape(current)}">
+          {f'<input type="hidden" name="token" value="{html.escape(self.server.write_token)}">' if getattr(self.server, "write_token", "") else ""}
           <label class="dropzone" id="dropzone">
             <span id="dropText">Arrastra aquí o haz clic para elegir archivos</span>
             <input id="fileInput" type="file" name="file" multiple required>
@@ -568,6 +570,24 @@ class Handler(BaseHTTPRequestHandler):
             while chunk := f.read(1024 * 1024):
                 self.wfile.write(chunk)
 
+    def get_write_token(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return ""
+        # Token may come from headers or multipart. For simplicity, check Authorization first.
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[len("Bearer "):]
+        # Parse query as fallback token=...
+        url = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(url.query)
+        token = query.get("token", [""])[0]
+        if token:
+            return token
+        # Multipart token is resolved later by receive_files; here empty means unresolved.
+        return ""
+
     def receive_files(self):
         url = urllib.parse.urlsplit(self.path)
         ctype = self.headers.get("Content-Type", "")
@@ -598,6 +618,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = [part for part in body.split(b"--" + boundary) if b"\r\n\r\n" in part]
 
         current_rel = ""
+        supplied_token = ""
         for part in parts:
             headers, data = part.split(b"\r\n\r\n", 1)
             if data.endswith(b"\r\n"):
@@ -605,9 +626,17 @@ class Handler(BaseHTTPRequestHandler):
             field_match = re.search(rb'name="([^"]*)"', headers)
             if not field_match:
                 continue
-            if field_match.group(1).decode("utf-8", "replace") == "current_path":
+            name_value = field_match.group(1).decode("utf-8", "replace")
+            if name_value == "current_path":
                 current_rel = safe_relative(data.decode("utf-8", "replace").strip(), self.share_dir) or ""
-                break
+            elif name_value == "token":
+                supplied_token = data.decode("utf-8", "replace").strip()
+
+        if getattr(self.server, "write_token", ""):
+            candidate = supplied_token or self.get_write_token()
+            if candidate != self.server.write_token:
+                self.send_error(403, "Token inválido en la subida")
+                return
 
         if current_rel:
             resolved_dir = (self.share_dir / current_rel).resolve()
@@ -751,6 +780,7 @@ def main():
     parser.add_argument("--uninstall", action="store_true", help="desinstala symlink y repo opcional")
     parser.add_argument("--yes", action="store_true", help="confirma cambios destructivos")
     parser.add_argument("--quiet", action="store_true", help="solo muestra arranque y errores importantes")
+    parser.add_argument("--token", default=os.environ.get("WEBSHARE_TOKEN", ""), help="token requerido para subir (env WEBSHARE_TOKEN)")
     args = parser.parse_args()
 
     if args.version:
@@ -775,6 +805,7 @@ def main():
     httpd.max_upload_bytes = max(1, args.max_upload_mb) * 1024 * 1024
     httpd.max_upload_mb = max(1, args.max_upload_mb)
     httpd.log_requests = not args.quiet
+    httpd.write_token = args.token.strip()
 
     hostname = socket.gethostname()
     try:

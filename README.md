@@ -1,18 +1,36 @@
 # WebShare
 
 Servidor HTTP local para compartir, subir y descargar archivos dentro de una red
-LAN. Está escrito únicamente con la librería estándar de Python.
+LAN. Escrito únicamente con la librería estándar de Python, sin dependencias
+externas y sin necesidad de `venv`.
 
 ## Características
 
 - Servidor en Python 3.10+ sin dependencias externas.
 - Navegación de carpetas.
 - Subidas con nombres únicos para evitar sobrescrituras.
+- Barra de progreso de subida en el navegador.
 - Descargas en streaming.
-- `/health`.
+- Contador de tiempo activo dinámico.
+- API JSON para `curl` (`/api/status`, `/api/list`, `/api/info`, `/api/download`).
+- Modo solo lectura y límite de subida configurable.
+- Token opcional para escrituras.
+- Sandbox: todas las operaciones quedan dentro de la carpeta compartida.
 - Cierre limpio con `Ctrl+C`.
-- Logs de solicitudes, incluyendo User-Agent.
-- Sin venv: instalación liviana.
+
+## Requisitos
+
+- Python 3.10 o superior.
+- `git` (solo para instalar y actualizar desde el repositorio).
+
+## Instalación
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/braiidev/webshare/main/install.sh | sh
+```
+
+El instalador coloca el código en `~/.local/share/webshare` y crea el comando
+`~/.local/bin/webshare`. No requiere `sudo`.
 
 ## Uso
 
@@ -20,6 +38,7 @@ LAN. Está escrito únicamente con la librería estándar de Python.
 webshare
 webshare --port 8080
 webshare --dir /carpeta/a/compartir --bind 0.0.0.0
+webshare --read-only
 webshare --token "mi-token-secreto"
 WEBSHARE_TOKEN=... webshare
 ```
@@ -30,6 +49,44 @@ Valores por defecto:
 - bind: `0.0.0.0`
 - puerto: `8000`
 
+## Opciones
+
+| Opción | Default | Descripción |
+| --- | --- | --- |
+| `--dir` | `~/Descargas` | Carpeta compartida (raíz del sandbox). |
+| `--bind` | `0.0.0.0` | Dirección de escucha. |
+| `--port` | `8000` | Puerto HTTP. |
+| `--read-only` | apagado | Desactiva escrituras; las descargas siguen permitidas. |
+| `--max-upload-mb` | `5120` | Límite de subida en MB. |
+| `--token` / `WEBSHARE_TOKEN` | vacío | Token requerido para subir. |
+| `--quiet` | apagado | Desactiva los logs HTTP. |
+| `--update` | - | Actualiza repositorio y symlink. |
+| `--uninstall` | - | Desinstala symlink y repositorio. |
+| `--version` | - | Muestra la versión. |
+
+## Endpoints
+
+- `GET /` — interfaz web.
+- `GET /health` — JSON con estado, uptime, versión, directorio y read-only.
+- `GET /version` — JSON con la versión.
+- `GET /api/status` — alias JSON del estado (uptime, directorio, read-only).
+- `GET /api/list?path=...` — listado JSON de una carpeta.
+- `GET /api/info?path=...` — metadatos JSON de un archivo o carpeta.
+- `GET /api/download?path=...` — descarga en streaming (alias de `/download`).
+- `GET /download?path=...` — descarga en streaming (legacy).
+- `POST /upload` — subida multipart.
+
+## Seguridad
+
+- **Sandbox obligatorio**: solo se opera dentro de `--dir`; se rechazan rutas
+  absolutas y cualquier reversal path (`..`, `%2e%2e`, barras invertidas, null).
+- Resolución de symlinks con verificación de pertenencia al root.
+- Validación de nombres y evitación de sobrescrituras.
+- Headers HTTP: CSP, `nosniff`, frame deny, referrer no y `no-store`.
+- Límite de tamaño de subida.
+- Token opcional para uploads.
+- Modo solo lectura disponible.
+
 ## Actualización y desinstalación
 
 ```sh
@@ -38,102 +95,19 @@ webshare --uninstall
 webshare --uninstall --yes
 ```
 
-## Seguridad
-
-- No permite path traversal fuera de la carpeta compartida.
-- Valida nombres de archivo.
-- Evita sobrescribir archivos existentes.
-- No expone servidores de modelos ni APIs externas.
-- Se recomienda usarlo solo en redes confiables o con control de firewall.
-- El servidor de archivos no está pensado como servicio público en Internet.
-
-## Instalación desde fuente
+## Desarrollo y pruebas
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/braiidev/webshare/main/install.sh | sh
-```
-
-## Desarrollo
-
-```sh
-python3 tests/test_webshare.py
 python3 webshare.py --port 8123
+python3 tests/test_webshare.py
+python3 -m unittest tests.test_webshare -v
 ```
+
+## Roadmap
+
+El plan por etapas y el estado del proyecto viven en [`TODO.md`](TODO.md)
+(tablero Kanban). El historial real se consulta con `git log`.
 
 ## Licencia
 
 Pendiente definir por el mantenedor.
-
-
-## Opciones
-
-| Opción | Default | Descripción |
-| --- | --- | --- |
-| `--dir` | `~/Descargas` | Carpeta compartida. |
-| `--bind` | `0.0.0.0` | Dirección de escucha. |
-| `--port` | `8000` | Puerto HTTP. |
-| `--read-only` | apagado | Desactiva uploads, descargas sí permitidas. |
-| `--max-upload-mb` | `5120` | Límite de subida. |
-| `--token` / `WEBSHARE_TOKEN` | vacío | Token requerido para uploads. |
-| `--quiet` | apagado | Desactiva logs HTTP. |
-| `--update` | - | Actualiza repo y symlink. |
-| `--uninstall` | - | Desinstala symlink/repo. |
-| `--version` | - | Muestra versión. |
-
-## Endpoints
-
-- `GET /api/status`
-- `GET /api/list?path=...`
-- `GET /api/info?path=...`
-- `GET /api/download?path=...`
-
-- `GET /` interfaz web
-- `GET /health` JSON con uptime, versión, directorio y read-only
-- `GET /version` JSON con versión
-- `GET /download?path=...` descarga streaming
-- `POST /upload` multipart
-
-## Seguridad
-
-- Path traversal protegido.
-- Validación de nombres.
-- Headers: CSP, nosniff, frame deny, referrer no, cache no-store.
-- Límites de tamaño de upload.
-- Token opcional.
-- Modo solo lectura.
-
-## Desarrollo y pruebas
-```sh
-python3 -m unittest tests.test_webshare -v
-```
-
-## Seguridad de Sandbox
-
-Todas las operaciones de lectura, escritura, borrado y listado se restringen a la
-carpeta compartida (`--dir`). El servidor aplica:
-
-- rechazo de paths absolutos;
-- rechazo de secuencias de reversión (`..`, `%2e%2e`, `%2e%2e%2f`, etc.);
-- normalización de barras invertidas y navegación relativa;
-- resolución de symlinks con verificación de pertenencia al root;
-- protección de carpetas fuera del sandbox;
-- evitación de path traversal por query, parámetro `path` o campos multipart.
-
-### Modo solo lectura
-```sh
-webshare --read-only
-```
-
-### Token de escritura
-```sh
-WEBSHARE_TOKEN=secret webshare
-```
-
-### Operaciones destructivas
-- borrado de archivos solo exact name match;
-- no permite borrar root;
-- directorios solo vacíos.
-
-### Logs
-- logs HTTP pueden desactivarse con `--quiet`;
-- por defecto no se usa request-log explícito para nombres sensibles.

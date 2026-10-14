@@ -112,6 +112,10 @@ Reglas:
 - Nunca se borra la raíz compartida.
 - Renombrar no sobrescribe: si el destino existe, responde `409 resource_exists`.
 - Se rechazan los enlaces simbólicos en renombrar y borrar (`400 symlink_not_allowed`).
+- Un symlink que apunta fuera del sandbox no se descarga, lista ni usa como base
+  (`403 path_forbidden`); uno interno sí se resuelve con normalidad.
+- Los permisos denegados del sistema de archivos responden con JSON limpio
+  (`500 read_failed`, `create_failed`, `delete_failed`) y nunca cortan la conexión.
 - Todo queda dentro del sandbox (`--dir`).
 
 ## Ejemplos con `curl`

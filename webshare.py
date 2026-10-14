@@ -17,7 +17,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.10.0"
+__version__ = "0.10.1"
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
@@ -664,15 +664,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json_error(404, "not_found", "No se encontró el archivo solicitado.")
             return
 
-        size = path.stat().st_size
-        self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(path.name)}")
-        self.send_header("Content-Length", str(size))
-        self.end_headers()
+        # Open before answering: a permission error must become a clean JSON reply
+        # instead of a 200 with a truncated body.
+        try:
+            handle = path.open("rb")
+        except OSError:
+            self.send_json_error(500, "read_failed", "No se pudo leer el archivo.")
+            return
 
-        with path.open("rb") as f:
-            while chunk := f.read(1024 * 1024):
+        with handle:
+            try:
+                size = os.fstat(handle.fileno()).st_size
+            except OSError:
+                size = path.stat().st_size
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{urllib.parse.quote(path.name)}")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            while chunk := handle.read(1024 * 1024):
                 self.wfile.write(chunk)
 
     def send_list(self, params):
@@ -696,7 +706,11 @@ class Handler(BaseHTTPRequestHandler):
         offset = max(0, offset)
         limit = max(1, min(limit, 5000))
 
-        entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        try:
+            entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        except OSError:
+            self.send_json_error(500, "read_failed", "No se pudo leer la carpeta.")
+            return
         items = []
         for entry in entries[offset:offset + limit]:
             try:

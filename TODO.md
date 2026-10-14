@@ -20,8 +20,6 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas planificadas, todavía no iniciadas.
 
-- [ ] `v0.10.1` — **Cobertura de symlinks y permisos** en tests de borde.
-  - estado: `PENDIENTE`
 - [ ] `v1.0.0` — **Release estable**: suite completa en verde, instalador
   verificado de punta a punta, licencia definida y notas de release.
   - estado: `PENDIENTE`
@@ -36,6 +34,17 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.10.1` — **Cobertura de symlinks y permisos + robustez**: dos clases nuevas
+  de tests de borde. `SymlinkWebShare` fija que un symlink que escapa del sandbox no
+  se descarga, lista, renombra, borra ni sirve de base para `mkdir`/upload
+  (`403 path_forbidden` / `400 symlink_not_allowed`), que un symlink interno sí se
+  descarga y que un bucle de symlinks no tumba el servidor. `PermissionsWebShare`
+  (se omite como root) verifica que permisos denegados devuelven JSON limpio. Los
+  tests destaparon y se corrigieron dos fallos de robustez: listar una carpeta sin
+  permiso de lectura y descargar un archivo sin permiso cortaban la conexión; ahora
+  responden `500 read_failed` (el archivo se abre antes de enviar cabeceras).
+  55/55 tests.
+  - estado: `HECHO` · tag `v0.10.1` (ver `git log`)
 - [x] `v0.10.0` — **Streaming multipart**: parser incremental (`MultipartScanner` +
   `LimitedReader`) que no carga el cuerpo en memoria; límite verificado con
   `Content-Length` antes de leer y reaplicado durante la lectura; archivos

@@ -37,6 +37,7 @@ class Paths(unittest.TestCase):
 
 import http.client
 import json
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -990,6 +991,257 @@ class ReadOnlyWebShare(unittest.TestCase):
         conn.close()
         self.assertEqual(response.status, 403)
         self.assertEqual(payload["error"], "read_only")
+
+
+class SymlinkWebShare(unittest.TestCase):
+    """Bordes con enlaces simbólicos: nunca se sale del sandbox (`--dir`)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8199
+        cls.token = "symlink-token"
+        cls.directory = Path(tempfile.mkdtemp(prefix="webshare-symlink-test-"))
+        cls.outside = Path(tempfile.mkdtemp(prefix="webshare-symlink-outside-"))
+        (cls.outside / "secret.txt").write_text("SECRET", encoding="utf-8")
+        (cls.outside / "secretdir").mkdir()
+        (cls.outside / "secretdir" / "deep.txt").write_text("DEEP", encoding="utf-8")
+        (cls.directory / "inside.txt").write_text("inside", encoding="utf-8")
+        (cls.directory / "escape.txt").symlink_to(cls.outside / "secret.txt")
+        (cls.directory / "escape_dir").symlink_to(cls.outside / "secretdir")
+        (cls.directory / "internal_link.txt").symlink_to(cls.directory / "inside.txt")
+        (cls.directory / "loop").symlink_to(cls.directory / "loop")
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                "--dir",
+                str(cls.directory),
+                "--port",
+                str(cls.port),
+                "--token",
+                cls.token,
+                "--quiet",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{cls.port}/api/status", timeout=0.5
+                ):
+                    return
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+        raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+        shutil.rmtree(cls.directory, ignore_errors=True)
+        shutil.rmtree(cls.outside, ignore_errors=True)
+
+    def request(self, method, path, token=True):
+        headers = {"X-Webshare-Token": self.token} if token else {}
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request(method, path, headers=headers)
+        response = conn.getresponse()
+        raw = response.read()
+        status = response.status
+        conn.close()
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            body = raw
+        return status, body
+
+    def test_escaping_symlink_download_blocked(self):
+        status, body = self.request("GET", "/api/download?path=escape.txt")
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "path_forbidden")
+
+    def test_internal_symlink_download_allowed(self):
+        status, raw = self.request("GET", "/api/download?path=internal_link.txt")
+        self.assertEqual(status, 200)
+        self.assertEqual(raw, b"inside")
+
+    def test_escaping_symlink_directory_not_listed(self):
+        status, body = self.request("GET", "/api/list?path=escape_dir")
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "path_forbidden")
+
+    def test_escaping_symlink_info_blocked(self):
+        status, body = self.request("GET", "/api/info?path=escape.txt")
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "path_forbidden")
+
+    def test_delete_and_rename_reject_symlinks(self):
+        status, body = self.request("DELETE", "/api/delete?path=escape.txt&confirm=escape.txt")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "symlink_not_allowed")
+        status, body = self.request("POST", "/api/rename?path=escape.txt&new_name=zz.txt")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "symlink_not_allowed")
+        self.assertTrue((self.directory / "escape.txt").is_symlink())
+        self.assertTrue((self.outside / "secret.txt").exists())
+
+    def test_delete_through_escaping_symlink_dir_blocked(self):
+        status, body = self.request(
+            "DELETE", "/api/delete?path=escape_dir/deep.txt&confirm=deep.txt"
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "path_forbidden")
+        self.assertTrue((self.outside / "secretdir" / "deep.txt").exists())
+
+    def test_mkdir_through_escaping_symlink_forbidden(self):
+        status, body = self.request("POST", "/api/mkdir?path=escape_dir&name=nuevo")
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "path_forbidden")
+        self.assertFalse((self.outside / "secretdir" / "nuevo").exists())
+
+    def test_upload_through_escaping_symlink_forbidden(self):
+        boundary = "sym-up"
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="current_path"\r\n\r\nescape_dir\r\n'
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="up.txt"\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8") + b"x" + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request(
+            "POST",
+            "/upload",
+            body=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body)),
+                "X-Webshare-Token": self.token,
+            },
+        )
+        response = conn.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        conn.close()
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"], "path_forbidden")
+        self.assertFalse((self.outside / "secretdir" / "up.txt").exists())
+
+    def test_symlink_loop_does_not_break_server(self):
+        status, _ = self.request("GET", "/api/download?path=loop")
+        self.assertIn(status, (400, 403, 404, 500))
+        status, body = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ready"])
+
+
+@unittest.skipIf(os.geteuid() == 0, "los permisos de archivo no aplican como root")
+class PermissionsWebShare(unittest.TestCase):
+    """Permisos denegados producen errores JSON limpios, sin cortar la conexión."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8200
+        cls.token = "perm-token"
+        cls.directory = Path(tempfile.mkdtemp(prefix="webshare-perm-test-"))
+        (cls.directory / "noread.txt").write_text("secret", encoding="utf-8")
+        (cls.directory / "noread.txt").chmod(0o000)
+        (cls.directory / "noread_dir").mkdir()
+        (cls.directory / "noread_dir" / "x.txt").write_text("x", encoding="utf-8")
+        (cls.directory / "noread_dir").chmod(0o000)
+        cls.ro = cls.directory / "ro"
+        cls.ro.mkdir()
+        (cls.ro / "keep.txt").write_text("keep", encoding="utf-8")
+        cls.ro.chmod(0o555)
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                "--dir",
+                str(cls.directory),
+                "--port",
+                str(cls.port),
+                "--token",
+                cls.token,
+                "--quiet",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{cls.port}/api/status", timeout=0.5
+                ):
+                    return
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+        raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+        for path, mode in (
+            (cls.directory / "noread.txt", 0o644),
+            (cls.directory / "noread_dir", 0o755),
+            (cls.ro, 0o755),
+        ):
+            try:
+                path.chmod(mode)
+            except OSError:
+                pass
+        shutil.rmtree(cls.directory, ignore_errors=True)
+
+    def request(self, method, path):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request(method, path, headers={"X-Webshare-Token": self.token})
+        response = conn.getresponse()
+        raw = response.read()
+        status = response.status
+        conn.close()
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            body = raw
+        return status, body
+
+    def test_unreadable_file_download_is_json_error(self):
+        status, body = self.request("GET", "/api/download?path=noread.txt")
+        self.assertEqual(status, 500)
+        self.assertEqual(body["error"], "read_failed")
+
+    def test_unreadable_directory_listing_is_json_error(self):
+        status, body = self.request("GET", "/api/list?path=noread_dir")
+        self.assertEqual(status, 500)
+        self.assertEqual(body["error"], "read_failed")
+
+    def test_mkdir_in_readonly_directory_fails_cleanly(self):
+        status, body = self.request("POST", "/api/mkdir?path=ro&name=nuevo")
+        self.assertEqual(status, 500)
+        self.assertEqual(body["error"], "create_failed")
+        self.assertFalse((self.ro / "nuevo").exists())
+
+    def test_delete_in_readonly_directory_fails_cleanly(self):
+        status, body = self.request("DELETE", "/api/delete?path=ro/keep.txt&confirm=keep.txt")
+        self.assertEqual(status, 500)
+        self.assertEqual(body["error"], "delete_failed")
+        self.assertTrue((self.ro / "keep.txt").exists())
+
+    def test_server_survives_permission_errors(self):
+        self.request("GET", "/api/list?path=noread_dir")
+        self.request("GET", "/api/download?path=noread.txt")
+        status, body = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ready"])
 
 
 if __name__ == "__main__":

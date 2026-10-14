@@ -17,7 +17,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.11.1"
+__version__ = "0.12.0"
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
@@ -401,13 +401,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
         if path == "/upload":
-            if getattr(self.server, "read_only", False):
+            if not self.upload_allowed():
                 try:
                     length = int(self.headers.get("Content-Length", "0") or 0)
                 except ValueError:
                     length = 0
                 self.drain_request_body(min(length, UPLOAD_DRAIN_LIMIT))
-                self.send_json_error(403, "read_only", "Servidor en modo solo lectura.")
+                if getattr(self.server, "read_only", False):
+                    self.send_json_error(403, "read_only", "Servidor en modo solo lectura.")
+                else:
+                    self.send_json_error(
+                        403,
+                        "upload_disabled",
+                        "Subidas deshabilitadas: iniciá el servidor con --token "
+                        "o --allow-anonymous-upload.",
+                    )
                 return
             self.receive_files()
             return
@@ -457,6 +465,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def token_configured(self):
         return bool(getattr(self.server, "write_token", ""))
+
+    def upload_allowed(self):
+        if getattr(self.server, "read_only", False):
+            return False
+        # Secure by default: uploads need a token, unless the operator explicitly
+        # opted into anonymous uploads for a trusted LAN.
+        return self.token_configured() or getattr(self.server, "allow_anonymous_upload", False)
+
+    def anonymous_upload(self):
+        return (
+            not getattr(self.server, "read_only", False)
+            and not self.token_configured()
+            and getattr(self.server, "allow_anonymous_upload", False)
+        )
 
     def token_authenticated(self, supplied):
         if not self.token_configured() or not supplied:
@@ -657,6 +679,8 @@ class Handler(BaseHTTPRequestHandler):
             "read_only": read_only,
             "token_required": token_required,
             "crud_enabled": token_required and not read_only,
+            "upload_enabled": self.upload_allowed(),
+            "anonymous_upload": self.anonymous_upload(),
             "max_upload_mb": getattr(self.server, "max_upload_mb", 0),
         }
 
@@ -1186,6 +1210,11 @@ def main():
     parser.add_argument("--bind", default="0.0.0.0", help="dirección de escucha")
     parser.add_argument("--port", type=int, default=8000, help="puerto HTTP")
     parser.add_argument("--read-only", action="store_true", help="deshabilita subidas y escrituras")
+    parser.add_argument(
+        "--allow-anonymous-upload",
+        action="store_true",
+        help="permite subir sin token (por defecto, sin token no se puede subir)",
+    )
     parser.add_argument("--max-upload-mb", type=int, default=5120, help="límite de subida en MB")
     parser.add_argument("--version", action="store_true", help="mostrar versión")
     parser.add_argument("--update", action="store_true", help="actualiza repositorio y symlink")
@@ -1219,6 +1248,7 @@ def main():
     httpd.max_upload_mb = max(1, args.max_upload_mb)
     httpd.log_requests = not args.quiet
     httpd.write_token = args.token.strip()
+    httpd.allow_anonymous_upload = args.allow_anonymous_upload
 
     hostname = socket.gethostname()
     try:
@@ -1235,6 +1265,10 @@ def main():
     print(f"  Max upload: {args.max_upload_mb} MB")
     if args.read_only:
         print("  Modo: solo lectura")
+    elif not args.token.strip() and args.allow_anonymous_upload:
+        print("  Modo: subidas anónimas habilitadas")
+    elif not args.token.strip():
+        print("  Subidas: deshabilitadas (usá --token o --allow-anonymous-upload)")
     if args.quiet:
         print("  Logs HTTP: desactivados")
     print("  Ctrl+C para detener.")

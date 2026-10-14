@@ -71,6 +71,12 @@ function crudOffered() {
   return Boolean(state.status && state.status.crud_enabled);
 }
 
+function uploadEnabled() {
+  if (!state.status) return true;
+  if (state.status.upload_enabled === undefined) return !state.status.read_only;
+  return Boolean(state.status.upload_enabled);
+}
+
 /* ---------- alerts ---------- */
 
 function clearAlerts() {
@@ -122,10 +128,15 @@ function updateAuthUI() {
   el("newFolderButton").disabled = !active;
 
   const dropzone = el("dropzone");
-  dropzone.classList.toggle("is-disabled", readOnly);
-  el("fileInput").disabled = readOnly;
+  const uploadOk = uploadEnabled();
+  dropzone.classList.toggle("is-disabled", !uploadOk);
+  el("fileInput").disabled = !uploadOk;
   if (readOnly) {
     el("uploadHint").textContent = "El servidor está en modo solo lectura: las subidas están deshabilitadas.";
+    el("uploadHint").className = "alert alert-warning small mb-3";
+  } else if (!uploadOk) {
+    el("uploadHint").textContent =
+      "Las subidas están deshabilitadas: el servidor necesita token o --allow-anonymous-upload.";
     el("uploadHint").className = "alert alert-warning small mb-3";
   }
 
@@ -486,7 +497,7 @@ function setFiles(files) {
   el("selectedLabel").textContent = count
     ? `${count} archivo${count === 1 ? "" : "s"} seleccionado${count === 1 ? "" : "s"}`
     : "Ningún archivo seleccionado";
-  el("submitButton").disabled = count === 0 || Boolean(state.status && state.status.read_only);
+  el("submitButton").disabled = count === 0 || !uploadEnabled();
 }
 
 function setProgress(fraction) {

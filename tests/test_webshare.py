@@ -87,6 +87,7 @@ class IntegrationWebShare(unittest.TestCase):
                 str(cls.port),
                 "--max-upload-mb",
                 "1",
+                "--allow-anonymous-upload",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -110,6 +111,15 @@ class IntegrationWebShare(unittest.TestCase):
 
     def http_connection(self):
         return http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+
+    def test_status_reports_anonymous_upload(self):
+        conn = self.http_connection()
+        conn.request("GET", "/api/status")
+        response = conn.getresponse()
+        status = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertTrue(status["upload_enabled"])
+        self.assertTrue(status["anonymous_upload"])
 
     def test_health_json(self):
         conn = self.http_connection()
@@ -1514,6 +1524,80 @@ class OrphanSweepWebShare(unittest.TestCase):
     def test_connection_timeout_configured(self):
         self.assertEqual(webshare.Handler.timeout, webshare.CONNECTION_TIMEOUT)
         self.assertGreater(webshare.MAX_CONNECTIONS, 0)
+
+
+class UploadDisabledWebShare(unittest.TestCase):
+    """Sin token y sin --allow-anonymous-upload, las subidas quedan bloqueadas."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8203
+        cls.directory = tempfile.mkdtemp(prefix="webshare-upload-off-")
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                "--dir",
+                cls.directory,
+                "--port",
+                str(cls.port),
+                "--quiet",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{cls.port}/api/status", timeout=0.5
+                ):
+                    break
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+        shutil.rmtree(cls.directory, ignore_errors=True)
+
+    def test_status_disables_upload(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/api/status")
+        status = json.loads(conn.getresponse().read().decode("utf-8"))
+        conn.close()
+        self.assertFalse(status["upload_enabled"])
+        self.assertFalse(status["anonymous_upload"])
+        self.assertFalse(status["crud_enabled"])
+
+    def test_upload_returns_upload_disabled(self):
+        boundary = "bnd-off"
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="x.txt"\r\n\r\n'
+        ).encode("ascii") + b"x" + f"\r\n--{boundary}--\r\n".encode("ascii")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request(
+            "POST",
+            "/upload",
+            body=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body)),
+            },
+        )
+        response = conn.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        conn.close()
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"], "upload_disabled")
+        self.assertFalse((Path(self.directory) / "x.txt").exists())
 
 
 if __name__ == "__main__":

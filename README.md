@@ -17,7 +17,8 @@ externas y sin necesidad de `venv`.
 - Contador de tiempo activo dinámico.
 - API JSON para `curl` (`/api/status`, `/api/list`, `/api/info`, `/api/download`).
 - Modo solo lectura y límite de subida configurable.
-- Token opcional para subidas y para el CRUD (crear carpeta, renombrar, borrar).
+- Subidas seguras por defecto: requieren token; `--allow-anonymous-upload` habilita el modo "drop" en una LAN de confianza.
+- Token para subidas y para el CRUD (crear carpeta, renombrar, borrar).
 - El token se guarda en `sessionStorage` y viaja por cabecera; **nunca** se embebe en el HTML.
 - Sandbox: todas las operaciones quedan dentro de la carpeta compartida.
 - Cierre limpio con `Ctrl+C`.
@@ -63,6 +64,7 @@ Valores por defecto:
 | `--read-only` | apagado | Desactiva escrituras; las descargas siguen permitidas. |
 | `--max-upload-mb` | `5120` | Límite de subida en MB. |
 | `--token` / `WEBSHARE_TOKEN` | vacío | Token para subir y para el CRUD. |
+| `--allow-anonymous-upload` | apagado | Sin token, permite subir igual (modo "drop" anónimo). |
 | `--quiet` | apagado | Desactiva los logs HTTP. |
 | `--update` | - | Actualiza repositorio y symlink. |
 | `--uninstall` | - | Desinstala symlink y repositorio. |
@@ -96,9 +98,11 @@ temporales se eliminan.
 ## CRUD (crear, renombrar, borrar)
 
 El CRUD solo se habilita si el servidor arrancó con token (`--token` o
-`WEBSHARE_TOKEN`). Sin token, el CRUD responde `403 crud_disabled` y las subidas
-siguen funcionando como siempre. Con token configurado, **las subidas también lo
-exigen**: se autentica antes de escribir nada en disco.
+`WEBSHARE_TOKEN`). Sin token, el CRUD responde `403 crud_disabled`. Las subidas
+también requieren token; si querés permitir subidas anónimas en una LAN de
+confianza, arrancá con `--allow-anonymous-upload` (entonces las subidas no piden
+token y el CRUD sigue deshabilitado). En todos los casos la autenticación se
+resuelve **antes** de escribir nada en disco.
 
 El token se envía con `Authorization: Bearer <token>`, `X-Webshare-Token`, o el
 parámetro `token`. En las subidas `multipart` también se acepta un campo `token`,
@@ -131,8 +135,11 @@ Sustituí `HOST:PORT` por el servidor de tu LAN (por ejemplo `localhost:8000`) y
 `$WEBSHARE_TOKEN` por tu clave.
 
 ```sh
-# Arrancar con clave: sin ella el CRUD responde 403 crud_disabled
+# Arrancar con clave; sin ella no se puede subir (403 upload_disabled) ni el CRUD
 webshare --port 8000 --token "$WEBSHARE_TOKEN"
+
+# Alternativa "drop": subidas anónimas, sin CRUD
+webshare --port 8000 --allow-anonymous-upload
 
 # Estado y validación de la clave
 curl -s http://HOST:PORT/api/status
@@ -161,7 +168,8 @@ curl -s -X DELETE -H "X-Webshare-Token: $WEBSHARE_TOKEN" \
 ```
 
 La clave también se acepta con `Authorization: Bearer $WEBSHARE_TOKEN` o el
-parámetro `token` (este último queda en logs/historial: menos recomendado).
+parámetro `token` (se redacta en los logs, pero queda en el historial del
+navegador: menos recomendado).
 
 Si la carpeta de `--dir` no existe, WebShare la crea al arrancar; esto incluye el
 valor por defecto (`~/Descargas`).
@@ -170,6 +178,9 @@ valor por defecto (`~/Descargas`).
 
 - **Sandbox obligatorio**: solo se opera dentro de `--dir`; se rechazan rutas
   absolutas y cualquier reversal path (`..`, `%2e%2e`, barras invertidas, null).
+- **Escritura segura por defecto**: las subidas y el CRUD exigen token; sin token
+  ambas responden `403` (`upload_disabled` / `crud_disabled`). El modo anónimo
+  requiere `--allow-anonymous-upload` explícito.
 - Resolución de symlinks con verificación de pertenencia al root; en el CRUD se
   rechazan explícitamente los enlaces simbólicos.
 - Validación estricta de nombres (un solo segmento, sin separadores ni control).

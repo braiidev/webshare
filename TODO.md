@@ -34,6 +34,13 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.12.0` — **Subidas seguras por defecto**: antes, sin token, cualquiera
+  en la LAN podía subir archivos (el CRUD sí quedaba bloqueado). Ahora las
+  subidas también exigen token; sin token responden `403 upload_disabled`. El
+  modo "drop" anónimo se recupera explícitamente con `--allow-anonymous-upload`.
+  `/api/status` expone `upload_enabled`/`anonymous_upload` y la UI refleja si las
+  subidas están deshabilitadas. 72/72 tests.
+  - estado: `HECHO` · tag `v0.12.0` (ver `git log`)
 - [x] `v0.11.1` — **Hardening, hallazgos menores**: (1) el token enviado por
   query se redacta en los logs; (2) `/api/status` deja de exponer la ruta
   absoluta (ahora `root_name`, y la UI usa eso); (3) el header `Server` no

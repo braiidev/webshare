@@ -20,8 +20,6 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas planificadas, todavía no iniciadas.
 
-- [ ] `v0.9.3` — **Documentación operativa**: ejemplos `curl` de cada endpoint CRUD.
-  - estado: `PENDIENTE`
 - [ ] `v0.10.0` — **Streaming multipart**: parser de subida con límite estricto
   previo y limpieza garantizada de temporales.
   - estado: `PENDIENTE`
@@ -41,6 +39,11 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.9.3` — **Documentación operativa + robustez de arranque**: sección
+  "Ejemplos con `curl`" en `README.md` (auth, listar/descargar, mkdir, upload,
+  rename, delete; clave por cabecera) y test que fija que un `--dir` inexistente
+  se cree al arrancar (incluidas subcarpetas). 32/32 tests.
+  - estado: `HECHO` · tag `v0.9.3` (ver `git log`)
 - [x] `v0.9.2` — **Tests de flujo (HTTP, sin navegador)**: nueva clase `FlowWebShare`
   que reproduce el recorrido real de la UI por HTTP/JSON — clave (`/api/auth`),
   crear carpeta, subir (multipart + `X-Webshare-Token`), listar, descargar,

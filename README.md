@@ -108,6 +108,47 @@ Reglas:
 - Se rechazan los enlaces simbólicos en renombrar y borrar (`400 symlink_not_allowed`).
 - Todo queda dentro del sandbox (`--dir`).
 
+## Ejemplos con `curl`
+
+Sustituí `HOST:PORT` por el servidor de tu LAN (por ejemplo `localhost:8000`) y
+`$WEBSHARE_TOKEN` por tu clave.
+
+```sh
+# Arrancar con clave: sin ella el CRUD responde 403 crud_disabled
+webshare --port 8000 --token "$WEBSHARE_TOKEN"
+
+# Estado y validación de la clave
+curl -s http://HOST:PORT/api/status
+curl -s -H "X-Webshare-Token: $WEBSHARE_TOKEN" http://HOST:PORT/api/auth
+
+# Listar y descargar (no requieren clave)
+curl -s "http://HOST:PORT/api/list?path="
+curl -sO "http://HOST:PORT/api/download?path=informe.pdf"
+
+# Crear carpeta
+curl -s -X POST -H "X-Webshare-Token: $WEBSHARE_TOKEN" \
+  "http://HOST:PORT/api/mkdir?path=&name=proyectos"
+
+# Subir un archivo (multipart; la clave va por cabecera)
+curl -s -H "X-Webshare-Token: $WEBSHARE_TOKEN" \
+  -F current_path=proyectos -F file=@informe.pdf \
+  http://HOST:PORT/upload
+
+# Renombrar
+curl -s -X POST -H "X-Webshare-Token: $WEBSHARE_TOKEN" \
+  "http://HOST:PORT/api/rename?path=proyectos/informe.pdf&new_name=final.pdf"
+
+# Borrar (confirm = nombre exacto; carpeta solo si está vacía)
+curl -s -X DELETE -H "X-Webshare-Token: $WEBSHARE_TOKEN" \
+  "http://HOST:PORT/api/delete?path=proyectos/final.pdf&confirm=final.pdf"
+```
+
+La clave también se acepta con `Authorization: Bearer $WEBSHARE_TOKEN` o el
+parámetro `token` (este último queda en logs/historial: menos recomendado).
+
+Si la carpeta de `--dir` no existe, WebShare la crea al arrancar; esto incluye el
+valor por defecto (`~/Descargas`).
+
 ## Seguridad
 
 - **Sandbox obligatorio**: solo se opera dentro de `--dir`; se rechazan rutas

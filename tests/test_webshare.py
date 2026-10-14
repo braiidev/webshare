@@ -696,5 +696,49 @@ class FlowWebShare(unittest.TestCase):
             self.assertEqual(found, [], f"{target.name} contiene emoji: {found}")
 
 
+class MissingDirectoryWebShare(unittest.TestCase):
+    """El directorio de `--dir` se crea al arrancar cuando todavía no existe."""
+
+    def test_missing_directory_is_created(self):
+        with tempfile.TemporaryDirectory(prefix="webshare-missing-test-") as base:
+            target = Path(base) / "no" / "existe" / "todavia"
+            self.assertFalse(target.exists())
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                    "--dir",
+                    str(target),
+                    "--port",
+                    "8196",
+                    "--quiet",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                for _ in range(50):
+                    try:
+                        with urllib.request.urlopen(
+                            "http://127.0.0.1:8196/api/status", timeout=0.5
+                        ) as response:
+                            self.assertEqual(response.status, 200)
+                        break
+                    except (urllib.error.URLError, OSError):
+                        time.sleep(0.1)
+                else:
+                    self.fail("WebShare did not start")
+
+                self.assertTrue(target.is_dir())
+                self.assertTrue(target.parent.is_dir())
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+
+
 if __name__ == "__main__":
     unittest.main()

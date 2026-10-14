@@ -11,6 +11,10 @@ TARGET="${WEBSHARE_DIR:-$HOME/.local/share/webshare}"
 BIN="${WEBSHARE_BIN:-$HOME/.local/bin/webshare}"
 UNINSTALL="${WEBSHARE_UNINSTALL:-0}"
 
+if [ "${1:-}" = "--uninstall" ]; then
+    UNINSTALL=1
+fi
+
 step() { printf '[install] %s\n' "$*" >&2; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
@@ -28,10 +32,6 @@ if [ "$UNINSTALL" = "1" ]; then
     fi
     step "desinstalacion completada"
     exit 0
-fi
-
-if [ "${1:-}" = "--uninstall" ]; then
-    WEBSHARE_UNINSTALL=1 exec "$0"
 fi
 
 step "verificando herramientas"

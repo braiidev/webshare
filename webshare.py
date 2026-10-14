@@ -17,7 +17,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.10.2"
+__version__ = "0.11.0"
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
@@ -29,6 +29,17 @@ UPLOAD_DRAIN_LIMIT = 8 * 1024 * 1024
 
 # Fallback upload ceiling when the server object has no limit configured.
 DEFAULT_MAX_UPLOAD = 5 * 1024 * 1024 * 1024
+
+# Largest urlencoded CRUD body we will buffer. CRUD arguments normally travel in
+# the query string, so the body only exists for clients that still post a form.
+MAX_FORM_BYTES = 64 * 1024
+
+# How long a connection may stay idle (no bytes) before it is closed. Bounds
+# slowloris-style connections that dribble headers or bodies.
+CONNECTION_TIMEOUT = 30
+
+# Upper bound of concurrent client connections handled at once.
+MAX_CONNECTIONS = 64
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -334,6 +345,8 @@ def lexical_relative(raw_path):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = f"webshare/{__version__}"
+    # Close sockets that sit idle; stops slowloris-style connections.
+    timeout = CONNECTION_TIMEOUT
 
     @property
     def share_dir(self):
@@ -404,6 +417,11 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             length = 0
         ctype = self.headers.get("Content-Type", "")
+        if length > MAX_FORM_BYTES:
+            # Refuse oversized form bodies instead of buffering them. Closing the
+            # connection avoids keeping the unread body around for the next request.
+            self.close_connection = True
+            length = 0
         if length > 0 and ctype.startswith("application/x-www-form-urlencoded"):
             raw = self.rfile.read(length).decode("utf-8", "replace")
             combined.update(urllib.parse.parse_qs(raw))
@@ -427,16 +445,20 @@ class Handler(BaseHTTPRequestHandler):
     def token_configured(self):
         return bool(getattr(self.server, "write_token", ""))
 
+    def token_authenticated(self, supplied):
+        if not self.token_configured() or not supplied:
+            return False
+        return hmac.compare_digest(
+            supplied.encode("utf-8"), self.server.write_token.encode("utf-8")
+        )
+
     def require_crud_token(self, data=None):
         if not self.token_configured():
             self.send_json_error(
                 403, "crud_disabled", "CRUD deshabilitado: iniciá el servidor con --token."
             )
             return False
-        supplied = self.extract_token(data)
-        if not supplied or not hmac.compare_digest(
-            supplied.encode("utf-8"), self.server.write_token.encode("utf-8")
-        ):
+        if not self.token_authenticated(self.extract_token(data)):
             self.send_json_error(403, "token_invalid", "Token inválido o ausente.")
             return False
         return True
@@ -452,9 +474,11 @@ class Handler(BaseHTTPRequestHandler):
         if getattr(self.server, "read_only", False):
             self.send_json_error(403, "read_only", "Servidor en modo solo lectura.")
             return
-        data = self.request_data()
-        if not self.require_crud_token(data):
+        # Authenticate before reading the body: an unauthenticated client must not
+        # be able to make the server buffer an unbounded payload.
+        if not self.require_crud_token():
             return
+        data = self.request_data()
         if path == "/api/mkdir":
             self.api_mkdir(data)
         elif path == "/api/rename":
@@ -758,11 +782,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         target = self.share_dir if not relative else self.share_dir / relative
-        if not target.exists():
+        try:
+            stat = target.stat()
+        except OSError:
             self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
             return
 
-        stat = target.stat()
         payload = {
             "path": relative or "/",
             "name": target.name or str(self.share_dir.name),
@@ -815,7 +840,10 @@ class Handler(BaseHTTPRequestHandler):
     @staticmethod
     def clean_filename(raw):
         name = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
-        return os.path.basename(name.replace("\\", "/"))
+        name = os.path.basename(name.replace("\\", "/"))
+        # NUL and control characters are invalid in filenames and would raise
+        # ValueError deep inside pathlib/os; drop them before anything else.
+        return "".join(ch for ch in name if ord(ch) >= 32 and ch != "\x7f").strip()
 
     def spool_part(self, part):
         """Stream a file part to a temporary file in the shared root.
@@ -885,7 +913,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         reader = LimitedReader(self.rfile, length)
-        header_token = self.extract_token()
+        require_token = self.token_configured()
+        authenticated = self.token_authenticated(self.extract_token())
         fields = {}
         pending_files = []
         temporary_paths = []
@@ -899,7 +928,23 @@ class Handler(BaseHTTPRequestHandler):
                 if filename is None:
                     value = part.value(self.MAX_FIELD_BYTES).decode("utf-8", "replace").strip()
                     fields[field_name] = value
+                    if field_name == "token" and not authenticated:
+                        # A token sent as a form field only counts if it arrives
+                        # before any file part, so nothing is spooled before auth.
+                        authenticated = self.token_authenticated(value)
+                        if not authenticated:
+                            self.reject_upload(
+                                403, "token_invalid", "Token inválido o ausente.", reader.remaining
+                            )
+                            return
                     continue
+                if require_token and not authenticated:
+                    # Reject before spooling: an unauthenticated client must not be
+                    # able to force the (potentially huge) body onto disk.
+                    self.reject_upload(
+                        403, "token_invalid", "Token inválido o ausente.", reader.remaining
+                    )
+                    return
                 temp_path = self.spool_part(part)
                 temporary_paths.append(temp_path)
                 pending_files.append((temp_path, self.clean_filename(filename)))
@@ -920,14 +965,10 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        if self.token_configured():
-            candidate = fields.get("token", "") or header_token
-            if not candidate or not hmac.compare_digest(
-                candidate.encode("utf-8"), self.server.write_token.encode("utf-8")
-            ):
-                self.cleanup_paths(temporary_paths)
-                self.send_json_error(403, "token_invalid", "Token inválido o ausente en la subida.")
-                return
+        if require_token and not authenticated:
+            self.cleanup_paths(temporary_paths)
+            self.send_json_error(403, "token_invalid", "Token inválido o ausente.")
+            return
 
         current_rel = safe_relative(fields.get("current_path", ""), self.share_dir)
         if current_rel is None:
@@ -1070,6 +1111,59 @@ def self_uninstall(remove_repo=False):
     log_step("Desinstalación completada.")
 
 
+class BoundedHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a cap on simultaneous connections.
+
+    Every accepted socket otherwise spawns a thread, so a flood of slow
+    connections can exhaust FDs, threads and memory. Excess connections are
+    dropped immediately.
+    """
+
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                self.shutdown_request(request)
+            except OSError:
+                pass
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
+def sweep_upload_temps(directory):
+    """Remove orphaned upload spool files left behind by a crashed process."""
+    removed = 0
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if not is_upload_temp(entry.name):
+                    continue
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        os.unlink(entry.path)
+                        removed += 1
+                except OSError:
+                    continue
+    except OSError:
+        return removed
+    return removed
+
+
 def main():
     parser = argparse.ArgumentParser(description="Servidor web simple para compartir archivos")
     parser.add_argument("--dir", default=str(Path.home() / "Descargas"), help="carpeta compartida")
@@ -1097,8 +1191,9 @@ def main():
 
     directory = Path(args.dir).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
+    swept = sweep_upload_temps(directory)
 
-    httpd = ThreadingHTTPServer((args.bind, args.port), Handler)
+    httpd = BoundedHTTPServer((args.bind, args.port), Handler)
     httpd.directory = directory
     httpd.bind_address = args.bind
     httpd.started_at = time.monotonic()
@@ -1116,6 +1211,8 @@ def main():
         local_ip = "127.0.0.1"
 
     print("WebShare activo")
+    if swept:
+        print(f"  Temporales de subida huérfanos eliminados: {swept}")
     print(f"  URL:   http://{local_ip}:{args.port}")
     print(f"  Bind:  {args.bind}:{args.port}")
     print(f"  Dir:   {directory}")

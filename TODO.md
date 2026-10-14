@@ -34,7 +34,18 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
-> Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
+- [x] `v0.11.0` — **Hardening (auditoría de seguridad)**: cierra los hallazgos de
+  una auditoría del backend. (1) El CRUD autentica **antes** de leer el cuerpo y
+  topa los formularios en 64 KiB (antes buffereaba un cuerpo arbitrario sin token:
+  DoS anónimo). (2) En subidas con token, se valida la cabecera o un campo `token`
+  previo al primer archivo: ya no se espoolea nada antes de autenticar. (3) Timeout
+  de conexión (30 s) y tope de conexiones simultáneas (64) contra slowloris. (4)
+  `clean_filename` descarta NUL y caracteres de control (antes un nombre con NUL
+  lanzaba `ValueError` no capturado). (5) `send_info` protege `stat()` (carreras →
+  `404 not_found`) y los temporales de subida huérfanos se limpian al arrancar.
+  Además, `install.sh --uninstall` funciona vía `curl | bash` (antes hacía
+  `exec "$0"` con `$0`=`bash`). 66/66 tests; instalador 18/18.
+  - estado: `HECHO` · tag `v0.11.0` (ver `git log`)
 
 - [x] `v0.10.2` — **Higiene de temporales de subida**: el archivo temporal
   `.webshare-upload-*.part` se creaba en la raíz del recurso compartido y, mientras

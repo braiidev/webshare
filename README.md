@@ -97,11 +97,14 @@ temporales se eliminan.
 
 El CRUD solo se habilita si el servidor arrancó con token (`--token` o
 `WEBSHARE_TOKEN`). Sin token, el CRUD responde `403 crud_disabled` y las subidas
-siguen funcionando como siempre.
+siguen funcionando como siempre. Con token configurado, **las subidas también lo
+exigen**: se autentica antes de escribir nada en disco.
 
 El token se envía con `Authorization: Bearer <token>`, `X-Webshare-Token`, o el
-parámetro `token`. La interfaz lo guarda en `sessionStorage` (solo esta pestaña)
-y lo envía por cabecera; el HTML servido nunca lo contiene.
+parámetro `token`. En las subidas `multipart` también se acepta un campo `token`,
+pero debe llegar **antes** que los archivos (el archivo no se escribe hasta
+autenticar). La interfaz lo guarda en `sessionStorage` (solo esta pestaña) y lo
+envía por cabecera; el HTML servido nunca lo contiene.
 
 Reglas:
 
@@ -177,6 +180,12 @@ valor por defecto (`~/Descargas`).
   `Cache-Control: no-cache`.
 - Límite de tamaño de subida (el cuerpo sobrante se descarta de forma acotada
   antes de responder `413`).
+- La autenticación del CRUD ocurre **antes** de leer el cuerpo: una petición sin
+  token no puede hacer que el servidor bufferice un payload arbitrario.
+- Las conexiones ociosas se cierran por timeout (mitiga slowloris) y hay un tope
+  de conexiones simultáneas.
+- Los temporales de subida huérfanos (por un cierre abrupto) se limpian al
+  arrancar.
 - Modo solo lectura disponible.
 
 ## Actualización y desinstalación

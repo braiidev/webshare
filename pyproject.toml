@@ -1,6 +1,6 @@
 [project]
 name = "webshare"
-version = "0.10.2"
+version = "0.11.0"
 description = "LAN file sharing HTTP server using the Python standard library"
 requires-python = ">=3.10"
 license = { text = "MIT" }

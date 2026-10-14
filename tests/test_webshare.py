@@ -32,6 +32,12 @@ class Paths(unittest.TestCase):
         self.assertFalse(second.exists())
         self.assertEqual(second.name, "data_1.txt")
 
+    def test_clean_filename_drops_control_chars(self):
+        self.assertEqual(webshare.Handler.clean_filename(b"a\x00b.txt"), "ab.txt")
+        self.assertEqual(webshare.Handler.clean_filename(b"a\r\nb.txt"), "ab.txt")
+        self.assertEqual(webshare.Handler.clean_filename(b"../evil.txt"), "evil.txt")
+        self.assertEqual(webshare.Handler.clean_filename(b"..\\evil.txt"), "evil.txt")
+
 
 
 
@@ -328,6 +334,22 @@ class CrudIntegrationWebShare(unittest.TestCase):
         response = conn.getresponse()
         body = response.read()
         return response, json.loads(body.decode("utf-8"))
+
+    def test_crud_rejects_before_reading_body(self):
+        # La autenticacion ocurre antes de leer el cuerpo: un Content-Length
+        # enorme sin token debe fallar rapido en vez de bufferizar el payload.
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.putrequest("POST", "/api/mkdir?path=&name=huge")
+        conn.putheader("Content-Type", "application/x-www-form-urlencoded")
+        conn.putheader("Content-Length", str(200 * 1024 * 1024))
+        conn.putheader("Connection", "close")
+        conn.endheaders()
+        response = conn.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        conn.close()
+        self.assertEqual(response.status, 403)
+        self.assertEqual(body["error"], "token_invalid")
+        self.assertFalse((Path(self.directory) / "huge").exists())
 
     def test_crud_lifecycle(self):
         response, body = self.request("POST", "/api/mkdir?path=&name=docs")
@@ -858,6 +880,35 @@ class UploadStreamWebShare(unittest.TestCase):
         self.assertEqual(status, 303)
         self.assertTrue((Path(self.directory) / "campo.txt").is_file())
 
+    def test_token_field_after_file_is_rejected_before_spooling(self):
+        # Con token configurado, el archivo no se escribe hasta autenticar; un
+        # campo token despues del archivo no alcanza a validar.
+        boundary = "bnd-late"
+        body = self.build_multipart(
+            [
+                {"name": "file", "filename": "tarde.txt", "content": b"x" * (256 * 1024)},
+                {"name": "token", "content": self.token.encode("utf-8")},
+            ],
+            boundary,
+        )
+        status, payload = self.post_upload(body, boundary)
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], "token_invalid")
+        self.assertFalse((Path(self.directory) / "tarde.txt").exists())
+        self.assertEqual(self.leftovers(), [])
+
+    def test_missing_token_is_rejected_before_spooling(self):
+        boundary = "bnd-notoken"
+        body = self.build_multipart(
+            [{"name": "file", "filename": "colado.txt", "content": b"x" * (256 * 1024)}],
+            boundary,
+        )
+        status, payload = self.post_upload(body, boundary)
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["error"], "token_invalid")
+        self.assertFalse((Path(self.directory) / "colado.txt").exists())
+        self.assertEqual(self.leftovers(), [])
+
     def test_bad_token_cleans_temporary_file(self):
         boundary = "bnd-bad"
         body = self.build_multipart(
@@ -1254,10 +1305,6 @@ class SpoolHygieneWebShare(unittest.TestCase):
         cls.directory = Path(tempfile.mkdtemp(prefix="webshare-spool-test-"))
         (cls.directory / "visible.txt").write_text("v", encoding="utf-8")
         (cls.directory / "sub").mkdir()
-        (cls.directory / ".webshare-upload-leftover.part").write_text("x", encoding="utf-8")
-        (cls.directory / "sub" / ".webshare-upload-leftover.part").write_text(
-            "x", encoding="utf-8"
-        )
         cls.proc = subprocess.Popen(
             [
                 sys.executable,
@@ -1278,10 +1325,17 @@ class SpoolHygieneWebShare(unittest.TestCase):
                 with urllib.request.urlopen(
                     f"http://127.0.0.1:{cls.port}/api/status", timeout=0.5
                 ):
-                    return
+                    break
             except (urllib.error.URLError, OSError):
                 time.sleep(0.1)
-        raise RuntimeError("WebShare did not start")
+        else:
+            raise RuntimeError("WebShare did not start")
+        # Se crean despues del arranque: el servidor barre los huerfanos al
+        # iniciar, asi que estos quedan como temporales "vivos" a ocultar.
+        (cls.directory / ".webshare-upload-leftover.part").write_text("x", encoding="utf-8")
+        (cls.directory / "sub" / ".webshare-upload-leftover.part").write_text(
+            "x", encoding="utf-8"
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -1370,6 +1424,58 @@ class SpoolHygieneWebShare(unittest.TestCase):
         self.assertEqual(response.status, 400)
         self.assertEqual(body["error"], "no_files")
         self.assertFalse((self.directory / ".webshare-upload-fake.part").exists())
+
+
+class OrphanSweepWebShare(unittest.TestCase):
+    """Al arrancar, se borran los temporales de subida huerfanos."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8202
+        cls.directory = Path(tempfile.mkdtemp(prefix="webshare-sweep-test-"))
+        (cls.directory / "visible.txt").write_text("v", encoding="utf-8")
+        (cls.directory / ".webshare-upload-orphan.part").write_text("x", encoding="utf-8")
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                "--dir",
+                str(cls.directory),
+                "--port",
+                str(cls.port),
+                "--quiet",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{cls.port}/api/status", timeout=0.5
+                ):
+                    break
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+        shutil.rmtree(cls.directory, ignore_errors=True)
+
+    def test_orphan_temp_is_removed_on_startup(self):
+        self.assertFalse((self.directory / ".webshare-upload-orphan.part").exists())
+        self.assertTrue((self.directory / "visible.txt").exists())
+
+    def test_connection_timeout_configured(self):
+        self.assertEqual(webshare.Handler.timeout, webshare.CONNECTION_TIMEOUT)
+        self.assertGreater(webshare.MAX_CONNECTIONS, 0)
 
 
 if __name__ == "__main__":

@@ -153,5 +153,90 @@ class IntegrationWebShare(unittest.TestCase):
         response2.read()
         self.assertEqual(response2.status, 413)
         self.assertFalse(Path(self.directory, "too-large.bin").exists())
+
+class ApiIntegrationWebShare(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8141
+        cls.directory = tempfile.mkdtemp(prefix="webshare-api-test-")
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                "--dir",
+                cls.directory,
+                "--port",
+                str(cls.port),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                http.client.HTTPConnection("127.0.0.1", cls.port, timeout=0.2).connect()
+                return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+
+    def test_api_info_status_list_and_download(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/api/status")
+        response = conn.getresponse()
+        status = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(status["status"], "ok")
+
+        payload = b"small API content"
+        (Path(self.directory) / "api-smoke.txt").write_bytes(payload)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/api/info?path=api-smoke.txt")
+        response = conn.getresponse()
+        info = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(info["name"], "api-smoke.txt")
+        self.assertEqual(info["size"], len(payload))
+        self.assertEqual(info["download_url"], "/api/download?path=api-smoke.txt")
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/api/list?path=.")
+        response = conn.getresponse()
+        listing = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 200)
+        self.assertTrue(any(item["name"] == "api-smoke.txt" for item in listing["entries"]))
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/api/download?path=api-smoke.txt")
+        response = conn.getresponse()
+        downloaded = response.read()
+        response.close()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(downloaded, payload)
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/api/info?path=../secret")
+        response = conn.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 403)
+        self.assertEqual(body["error"], "path_forbidden")
+
+    def test_not_found_is_json(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/api/info?path=no-such-file")
+        response = conn.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        self.assertEqual(response.status, 404)
+        self.assertEqual(body["error"], "not_found")
+
+
 if __name__ == "__main__":
     unittest.main()

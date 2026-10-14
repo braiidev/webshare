@@ -82,6 +82,11 @@ Pendiente definir por el mantenedor.
 
 ## Endpoints
 
+- `GET /api/status`
+- `GET /api/list?path=...`
+- `GET /api/info?path=...`
+- `GET /api/download?path=...`
+
 - `GET /` interfaz web
 - `GET /health` JSON con uptime, versión, directorio y read-only
 - `GET /version` JSON con versión

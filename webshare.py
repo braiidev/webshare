@@ -15,7 +15,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 REPO_DIR = Path(__file__).resolve().parent
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
 BIN_PATH = Path.home() / ".local/bin/webshare"
@@ -90,6 +90,28 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/":
             self.send_page(params)
+        elif url.path in ("/download", "/api/download"):
+            self.send_file(params)
+        elif url.path == "/api/list":
+            self.send_list(params)
+        elif url.path == "/api/info":
+            self.send_info(params)
+        elif url.path == "/api/status":
+            params = params  # alias
+            # Build the same JSON as /health without duplicating branches.
+            self.send_json(200, {
+                "status": "ok" if self.server.started_at else "starting",
+                "ready": True,
+                "version": __version__,
+                "uptime_seconds": int(time.monotonic() - self.server.started_at),
+                "directory": str(self.server.directory),
+                "bind": self.server.bind_address,
+                "port": self.server.server_port,
+                "read_only": getattr(self.server, "read_only", False),
+                "max_upload_mb": getattr(self.server, "max_upload_mb", 0),
+            })
+        elif url.path == "/version":
+            self.send_version()
         elif url.path in ("/health", "/readyz"):
             payload = {
                 "status": "ok" if self.server.started_at else "starting",
@@ -110,17 +132,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif url.path == "/version":
-            body = (json.dumps({"version": __version__}, sort_keys=True) + "\n").encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        elif url.path == "/download":
-            self.send_file(params)
         else:
-            self.send_error(404, "No encontrado")
+            self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
 
     def do_POST(self):
         if getattr(self.server, "read_only", False):
@@ -130,6 +143,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404, "No encontrado")
             return
         self.receive_files()
+
+    def send_json(self, status, payload):
+        body = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_json_error(self, status, code, message):
+        self.send_response(status)
+        body = (json.dumps({"error": code, "message": message}, sort_keys=True) + "\n").encode("utf-8")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def send_page(self, params):
         current = safe_relative(params.get("path", [""])[0], self.share_dir)
@@ -551,12 +580,12 @@ class Handler(BaseHTTPRequestHandler):
         raw_path = params.get("path", [params.get("name", [""])[0]])[0]
         relative = safe_relative(raw_path, self.share_dir)
         if relative is None:
-            self.send_error(403, "Ruta no permitida")
+            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
             return
 
         path = self.share_dir if not relative else self.share_dir / relative
         if not path.is_file():
-            self.send_error(404, "No encontrado")
+            self.send_json_error(404, "not_found", "No se encontró el archivo solicitado.")
             return
 
         size = path.stat().st_size
@@ -569,6 +598,77 @@ class Handler(BaseHTTPRequestHandler):
         with path.open("rb") as f:
             while chunk := f.read(1024 * 1024):
                 self.wfile.write(chunk)
+
+    def send_list(self, params):
+        raw_path = params.get("path", [""])[0]
+        relative = safe_relative(raw_path, self.share_dir)
+        if relative is None:
+            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
+            return
+
+        target = self.share_dir if not relative else self.share_dir / relative
+        if not target.is_dir():
+            self.send_json_error(404, "not_directory", "No se encontró la carpeta solicitada.")
+            return
+
+        try:
+            offset = int(params.get("offset", ["0"])[0])
+            limit = int(params.get("limit", ["1000"])[0])
+        except ValueError:
+            self.send_json_error(400, "invalid_query", "offset y limit deben ser enteros.")
+            return
+        offset = max(0, offset)
+        limit = max(1, min(limit, 5000))
+
+        entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        items = []
+        for entry in entries[offset:offset + limit]:
+            try:
+                stat = entry.stat()
+            except OSError:
+                continue
+            items.append({
+                "name": entry.name,
+                "type": "directory" if entry.is_dir() else "file",
+                "size": None if entry.is_dir() else stat.st_size,
+                "modified": int(stat.st_mtime),
+            })
+
+        payload = {
+            "path": relative or "/",
+            "total": len(entries),
+            "offset": offset,
+            "limit": limit,
+            "entries": items,
+        }
+        self.send_json(200, payload)
+
+    def send_info(self, params):
+        raw_path = params.get("path", [""])[0]
+        relative = safe_relative(raw_path, self.share_dir)
+        if relative is None:
+            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
+            return
+
+        target = self.share_dir if not relative else self.share_dir / relative
+        if not target.exists():
+            self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
+            return
+
+        stat = target.stat()
+        payload = {
+            "path": relative or "/",
+            "name": target.name or str(self.share_dir.name),
+            "type": "directory" if target.is_dir() else "file",
+            "size": None if target.is_dir() else stat.st_size,
+            "modified": int(stat.st_mtime),
+        }
+        if target.is_file():
+            payload["download_url"] = f"/api/download?path={urllib.parse.quote(relative, safe='/')}"
+        self.send_json(200, payload)
+
+    def send_version(self):
+        self.send_json(200, {"version": __version__})
 
     def get_write_token(self):
         try:

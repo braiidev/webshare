@@ -20,12 +20,8 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas planificadas, todavía no iniciadas.
 
-- [ ] `v0.9.1` — **UI CRUD**: botones y modales para crear carpeta/archivo,
-  renombrar y borrar (sin editar contenido), con confirmación escribiendo el
-  mismo nombre.
-  - estado: `PENDIENTE`
-- [ ] `v0.9.2` — **Tests de flujo**: cobertura de borde del formulario y de la
-  confirmación desde el navegador.
+- [ ] `v0.9.2` — **Tests de flujo (E2E)**: cobertura en navegador de crear carpeta,
+  renombrar, borrar y subir, incluyendo el ingreso de la clave.
   - estado: `PENDIENTE`
 - [ ] `v0.9.3` — **Documentación operativa**: ejemplos `curl` de cada endpoint CRUD.
   - estado: `PENDIENTE`
@@ -48,6 +44,16 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.9.1` — **Frontend modular + UI CRUD**: shell estático (`static/index.html`)
+  con CSS/JS propios servidos desde `/static`, sobre Bootswatch **Simplex** y
+  Bootstrap Icons locales (sin CDN, sin emoji) y toggle claro/oscuro. Listado
+  renderizado en el cliente; modales para nueva carpeta, renombrar y borrar (con
+  `confirm` por nombre). El token deja de embeberse en el HTML: se guarda en
+  `sessionStorage`, se valida con `/api/auth` y viaja por cabecera. Se elimina
+  `/api/create`; se endurecen nombres (`400 invalid_name`) y se rechazan symlinks
+  (`400 symlink_not_allowed`). `/api/status` expone `token_required`/`crud_enabled`;
+  CSP con `script-src 'self'`; assets con `ETag`/`304`. 25/25 tests.
+  - estado: `HECHO` · tag `v0.9.1` (commit actual, ver `git log`)
 - [x] `v0.9.0` — CRUD backend con token: `mkdir`, `create`, `rename` y `delete`
   (`DELETE`/`POST`), sandbox, confirmación por nombre, carpeta solo vacía y nunca
   la raíz; renombrar no sobrescribe. Upload sigue permitido sin token; CRUD solo

@@ -42,6 +42,9 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
 class IntegrationWebShare(unittest.TestCase):
@@ -336,10 +339,7 @@ class CrudIntegrationWebShare(unittest.TestCase):
         self.assertEqual(response.status, 409)
         self.assertEqual(body["error"], "resource_exists")
 
-        response, body = self.request("POST", "/api/create?path=docs&name=hola.txt")
-        self.assertEqual(response.status, 201)
-        self.assertEqual(body["created"], "docs/hola.txt")
-        self.assertEqual(body["type"], "file")
+        (Path(self.directory) / "docs" / "hola.txt").write_text("contenido", encoding="utf-8")
         self.assertTrue((Path(self.directory) / "docs" / "hola.txt").is_file())
 
         response, body = self.request("POST", "/api/rename?path=docs/hola.txt&new_name=chau.txt")
@@ -395,11 +395,82 @@ class CrudIntegrationWebShare(unittest.TestCase):
         self.assertEqual(body["error"], "path_forbidden")
 
     def test_post_delete_alias(self):
-        response, body = self.request("POST", "/api/create?path=&name=alias.txt")
-        self.assertEqual(response.status, 201)
+        (Path(self.directory) / "alias.txt").write_text("x", encoding="utf-8")
         response, body = self.request("POST", "/api/delete?path=alias.txt&confirm=alias.txt")
         self.assertEqual(response.status, 200)
         self.assertFalse((Path(self.directory) / "alias.txt").exists())
+
+    def test_create_endpoint_removed(self):
+        response, body = self.request("POST", "/api/create?path=&name=nope.txt")
+        self.assertEqual(response.status, 404)
+        self.assertEqual(body["error"], "not_found")
+        self.assertFalse((Path(self.directory) / "nope.txt").exists())
+
+    def test_invalid_names_rejected(self):
+        for name in ("a/b", "..", "a\\b", "con:punto", "  espacio  "):
+            response, body = self.request("POST", f"/api/mkdir?path=&name={urllib.parse.quote(name)}")
+            self.assertEqual(response.status, 400, name)
+            self.assertEqual(body["error"], "invalid_name", name)
+
+        (Path(self.directory) / "origen.txt").write_text("x", encoding="utf-8")
+        response, body = self.request(
+            "POST", f"/api/rename?path=origen.txt&new_name={urllib.parse.quote('a/b')}"
+        )
+        self.assertEqual(response.status, 400)
+        self.assertEqual(body["error"], "invalid_name")
+
+    def test_symlinks_rejected_in_delete_and_rename(self):
+        real = Path(self.directory) / "real.txt"
+        real.write_text("x", encoding="utf-8")
+        link = Path(self.directory) / "link.txt"
+        link.symlink_to(real)
+
+        response, body = self.request("DELETE", "/api/delete?path=link.txt&confirm=link.txt")
+        self.assertEqual(response.status, 400)
+        self.assertEqual(body["error"], "symlink_not_allowed")
+        self.assertTrue(link.is_symlink())
+
+        response, body = self.request("POST", "/api/rename?path=link.txt&new_name=otro.txt")
+        self.assertEqual(response.status, 400)
+        self.assertEqual(body["error"], "symlink_not_allowed")
+
+    def test_auth_endpoint(self):
+        response, body = self.request("GET", "/api/auth")
+        self.assertEqual(response.status, 200)
+        self.assertTrue(body["ok"])
+
+        response, body = self.request("GET", "/api/auth", token=False)
+        self.assertEqual(response.status, 403)
+        self.assertEqual(body["error"], "token_invalid")
+
+        response, body = self.request("GET", "/api/auth", token="wrong")
+        self.assertEqual(response.status, 403)
+        self.assertEqual(body["error"], "token_invalid")
+
+    def test_status_reports_crud_flags(self):
+        response, body = self.request("GET", "/api/status")
+        self.assertEqual(response.status, 200)
+        self.assertTrue(body["token_required"])
+        self.assertTrue(body["crud_enabled"])
+        self.assertFalse(body["read_only"])
+        self.assertEqual(body["version"], webshare.__version__)
+
+    def test_static_assets_served(self):
+        base = f"http://127.0.0.1:{self.port}"
+        for path, content_type in (
+            ("/", "text/html"),
+            ("/static/css/style.css", "text/css"),
+            ("/static/js/main.js", "text/javascript"),
+            ("/static/vendor/bootstrap.min.css", "text/css"),
+        ):
+            with urllib.request.urlopen(base + path, timeout=5) as response:
+                self.assertEqual(response.status, 200, path)
+                self.assertIn(content_type, response.headers.get("Content-Type", ""), path)
+
+        for attempt in ("/static/../webshare.py", "/static/%2e%2e/webshare.py"):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(base + attempt, timeout=5)
+            self.assertEqual(ctx.exception.code, 404, attempt)
 
 
 if __name__ == "__main__":

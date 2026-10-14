@@ -1,0 +1,151 @@
+:root {
+  --webshare-radius: 0.65rem;
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+  flex: 1 0 auto;
+}
+
+/* Navbar brand mark */
+.navbar-brand i {
+  font-size: 1.35rem;
+  color: var(--bs-primary);
+}
+
+/* Breadcrumb: quiet separators, truncation friendly */
+.breadcrumb {
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+
+.breadcrumb a {
+  text-decoration: none;
+}
+
+.breadcrumb-item + .breadcrumb-item::before {
+  content: "/";
+  color: var(--bs-secondary-color);
+}
+
+/* Entry list */
+#entryList .list-group-item {
+  border-left: 0;
+  border-right: 0;
+  padding: 0.65rem 0.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background-color: transparent;
+}
+
+#entryList .entry-icon {
+  font-size: 1.4rem;
+  line-height: 1;
+  width: 1.75rem;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+#entryList .entry-icon.is-folder {
+  color: var(--bs-warning);
+}
+
+#entryList .entry-icon.is-file {
+  color: var(--bs-secondary-color);
+}
+
+#entryList .entry-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#entryList .entry-meta {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  color: var(--bs-secondary-color);
+  font-variant-numeric: tabular-nums;
+}
+
+#entryList .entry-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.25rem;
+}
+
+#entryList .entry-actions .btn {
+  --bs-btn-padding-y: 0.15rem;
+  --bs-btn-padding-x: 0.45rem;
+  --bs-btn-font-size: 0.85rem;
+}
+
+/* Dropzone */
+.dropzone {
+  border: 2px dashed var(--bs-border-color);
+  border-radius: var(--webshare-radius);
+  padding: 1.5rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+  color: var(--bs-body-color);
+  background-color: var(--bs-body-bg);
+}
+
+.dropzone:hover,
+.dropzone:focus-visible,
+.dropzone.is-dragover {
+  border-color: var(--bs-primary);
+  background-color: var(--bs-tertiary-bg);
+  outline: none;
+}
+
+.dropzone.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+#progressBar {
+  transition: width 0.2s ease;
+}
+
+/* Dialogs */
+.app-dialog {
+  border: 1px solid var(--bs-border-color);
+  border-radius: var(--webshare-radius);
+  background-color: var(--bs-body-bg);
+  color: var(--bs-body-color);
+  padding: 1.25rem;
+  width: min(26rem, calc(100vw - 2rem));
+  box-shadow: 0 0.75rem 2rem rgba(0, 0, 0, 0.25);
+}
+
+.app-dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+.app-dialog form {
+  margin: 0;
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

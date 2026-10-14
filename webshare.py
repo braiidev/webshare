@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import hmac
-import html
 import json
 import os
 import re
@@ -16,28 +15,34 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 REPO_DIR = Path(__file__).resolve().parent
+STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
 BIN_PATH = Path.home() / ".local/bin/webshare"
 
+# Upper bound of request body we are willing to drain when rejecting an
+# oversized upload, so the client can read the 413 instead of a reset.
+UPLOAD_DRAIN_LIMIT = 8 * 1024 * 1024
 
-def human_size(size):
-    value = float(size)
-    for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
-        if value < 1024 or unit == "TiB":
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-
-
-def fmt_elapsed(seconds):
-    seconds = int(seconds)
-    days, seconds = divmod(seconds, 86400)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, seconds = divmod(seconds, 60)
-    if days:
-        return f"{days}d {hours:02d}:{minutes:02d}:{seconds:02d}"
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".txt": "text/plain; charset=utf-8",
+}
 
 
 def safe_relative(raw_path, root):
@@ -97,8 +102,43 @@ def unique_path(directory, filename):
     return directory / f"{stem}_{i}{suffix}"
 
 
+def strict_name(value):
+    """Validate a single path segment: no separators, traversal, or control chars."""
+    name = str(value or "")
+    if not name or name in {".", ".."}:
+        return None
+    if name != name.strip():
+        return None
+    if any(ch in name for ch in ("/", "\\", ":", "\x00")):
+        return None
+    if any(ord(ch) < 32 for ch in name):
+        return None
+    if len(name.encode("utf-8")) > 255:
+        return None
+    return name
+
+
+def lexical_relative(raw_path):
+    """Normalize a URL path without resolving symlinks; None when unsafe."""
+    if raw_path is None:
+        return ""
+    raw_path = urllib.parse.unquote(str(raw_path)).strip().replace("\\", "/")
+    if "\x00" in raw_path or raw_path.startswith("/"):
+        return None
+    parts = []
+    for part in raw_path.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            return None
+        if any(ch in part for ch in ("\\", ":", "\x00")):
+            return None
+        parts.append(part)
+    return "/".join(parts)
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "webshare/3.0"
+    server_version = f"webshare/{__version__}"
 
     @property
     def share_dir(self):
@@ -109,41 +149,23 @@ class Handler(BaseHTTPRequestHandler):
         params = urllib.parse.parse_qs(url.query)
 
         if url.path == "/":
-            self.send_page(params)
+            self.send_index()
+        elif url.path.startswith("/static/"):
+            self.send_static(url.path)
         elif url.path in ("/download", "/api/download"):
             self.send_file(params)
         elif url.path == "/api/list":
             self.send_list(params)
         elif url.path == "/api/info":
             self.send_info(params)
+        elif url.path == "/api/auth":
+            self.handle_auth()
         elif url.path == "/api/status":
-            params = params  # alias
-            # Build the same JSON as /health without duplicating branches.
-            self.send_json(200, {
-                "status": "ok" if self.server.started_at else "starting",
-                "ready": True,
-                "version": __version__,
-                "uptime_seconds": int(time.monotonic() - self.server.started_at),
-                "directory": str(self.server.directory),
-                "bind": self.server.bind_address,
-                "port": self.server.server_port,
-                "read_only": getattr(self.server, "read_only", False),
-                "max_upload_mb": getattr(self.server, "max_upload_mb", 0),
-            })
+            self.send_json(200, self.status_payload())
         elif url.path == "/version":
             self.send_version()
         elif url.path in ("/health", "/readyz"):
-            payload = {
-                "status": "ok" if self.server.started_at else "starting",
-                "ready": True,
-                "version": __version__,
-                "uptime_seconds": int(time.monotonic() - self.server.started_at),
-                "directory": str(self.server.directory),
-                "bind": self.server.bind_address,
-                "port": self.server.server_port,
-                "read_only": getattr(self.server, "read_only", False),
-                "max_upload_mb": getattr(self.server, "max_upload_mb", 0),
-            }
+            payload = self.status_payload()
             if url.path == "/readyz":
                 payload["path"] = "readyz"
             body = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -163,10 +185,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.receive_files()
             return
-        if path in ("/api/mkdir", "/api/create", "/api/rename", "/api/delete"):
+        if path in ("/api/mkdir", "/api/rename", "/api/delete"):
             self.handle_crud(path)
             return
-        self.send_error(404, "No encontrado")
+        self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
 
     def do_DELETE(self):
         path = urllib.parse.urlsplit(self.path).path
@@ -188,29 +210,43 @@ class Handler(BaseHTTPRequestHandler):
         combined.update(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query))
         return combined
 
-    def get_crud_token(self, data):
+    def extract_token(self, data=None):
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             return auth[len("Bearer "):].strip()
         header = self.headers.get("X-Webshare-Token", "").strip()
         if header:
             return header
-        return (data.get("token", [""])[0] or "").strip()
+        if data:
+            body_token = (data.get("token", [""])[0] or "").strip()
+            if body_token:
+                return body_token
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        return (query.get("token", [""])[0] or "").strip()
 
-    def require_crud_token(self, data):
-        configured = getattr(self.server, "write_token", "")
-        if not configured:
+    def token_configured(self):
+        return bool(getattr(self.server, "write_token", ""))
+
+    def require_crud_token(self, data=None):
+        if not self.token_configured():
             self.send_json_error(
                 403, "crud_disabled", "CRUD deshabilitado: iniciá el servidor con --token."
             )
             return False
-        supplied = self.get_crud_token(data)
+        supplied = self.extract_token(data)
         if not supplied or not hmac.compare_digest(
-            supplied.encode("utf-8"), configured.encode("utf-8")
+            supplied.encode("utf-8"), self.server.write_token.encode("utf-8")
         ):
             self.send_json_error(403, "token_invalid", "Token inválido o ausente.")
             return False
         return True
+
+    def handle_auth(self):
+        if getattr(self.server, "read_only", False):
+            self.send_json_error(403, "read_only", "Servidor en modo solo lectura.")
+            return
+        if self.require_crud_token():
+            self.send_json(200, {"ok": True, "crud_enabled": True})
 
     def handle_crud(self, path):
         if getattr(self.server, "read_only", False):
@@ -221,8 +257,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/mkdir":
             self.api_mkdir(data)
-        elif path == "/api/create":
-            self.api_create(data)
         elif path == "/api/rename":
             self.api_rename(data)
         else:
@@ -234,6 +268,28 @@ class Handler(BaseHTTPRequestHandler):
             return None, None
         parent = self.share_dir if not relative else self.share_dir / relative
         return relative, parent
+
+    def resolve_entry(self, raw):
+        """Resolve an existing entry without following a symlink in the leaf.
+
+        Returns (relative, absolute) or (None, None) when the path is unsafe or
+        traverses a symlinked directory outside the shared root.
+        """
+        relative = lexical_relative(raw)
+        if relative is None:
+            return None, None
+        if not relative:
+            # The shared root itself: callers reject it with a specific error.
+            return "", self.share_dir
+        candidate = self.share_dir / relative
+        root = self.share_dir.resolve()
+        try:
+            parent_real = Path(os.path.realpath(candidate.parent))
+        except OSError:
+            return None, None
+        if not parent_real.is_relative_to(root):
+            return None, None
+        return relative, candidate
 
     @staticmethod
     def rel_join(base, name):
@@ -247,7 +303,11 @@ class Handler(BaseHTTPRequestHandler):
         if not parent.is_dir():
             self.send_json_error(404, "not_directory", "No se encontró la carpeta destino.")
             return
-        target = safe_target(parent, data.get("name", [""])[0])
+        name = strict_name(data.get("name", [""])[0])
+        if name is None:
+            self.send_json_error(400, "invalid_name", "Nombre inválido.")
+            return
+        target = safe_target(parent, name)
         if target is None:
             self.send_json_error(400, "invalid_name", "Nombre inválido.")
             return
@@ -261,45 +321,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json(201, {"created": self.rel_join(relative, target.name), "type": "directory"})
 
-    def api_create(self, data):
-        relative, parent = self.resolve_parent(data.get("path", [""])[0])
-        if relative is None:
-            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
-            return
-        if not parent.is_dir():
-            self.send_json_error(404, "not_directory", "No se encontró la carpeta destino.")
-            return
-        target = safe_target(parent, data.get("name", [""])[0])
-        if target is None:
-            self.send_json_error(400, "invalid_name", "Nombre inválido.")
-            return
-        try:
-            with target.open("xb"):
-                pass
-        except FileExistsError:
-            self.send_json_error(409, "resource_exists", "Ya existe un recurso con ese nombre.")
-            return
-        except OSError:
-            self.send_json_error(500, "create_failed", "No se pudo crear el archivo.")
-            return
-        self.send_json(201, {"created": self.rel_join(relative, target.name), "type": "file"})
-
     def api_rename(self, data):
-        relative = safe_relative(data.get("path", [""])[0], self.share_dir)
+        relative, source = self.resolve_entry(data.get("path", [""])[0])
         if relative is None:
             self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
             return
         if not relative:
             self.send_json_error(400, "cannot_rename_root", "No se puede renombrar la raíz compartida.")
             return
-        source = self.share_dir / relative
+        if source.is_symlink():
+            self.send_json_error(400, "symlink_not_allowed", "No se permiten enlaces simbólicos.")
+            return
         if not os.path.lexists(source):
             self.send_json_error(404, "not_found", "No se encontró el recurso a renombrar.")
             return
-        target = safe_target(source.parent, data.get("new_name", [""])[0])
-        if target is None:
+        new_name = strict_name(data.get("new_name", [""])[0])
+        if new_name is None:
             self.send_json_error(400, "invalid_name", "Nombre nuevo inválido.")
             return
+        target = source.parent / new_name
         if os.path.lexists(target):
             self.send_json_error(409, "resource_exists", "Ya existe un recurso con ese nombre.")
             return
@@ -314,14 +354,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"from": relative, "to": self.rel_join(parent_rel, target.name)})
 
     def api_delete(self, data):
-        relative = safe_relative(data.get("path", [""])[0], self.share_dir)
+        relative, target = self.resolve_entry(data.get("path", [""])[0])
         if relative is None:
             self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
             return
         if not relative:
             self.send_json_error(403, "cannot_delete_root", "No se puede borrar la raíz compartida.")
             return
-        target = self.share_dir / relative
+        if target.is_symlink():
+            self.send_json_error(400, "symlink_not_allowed", "No se permiten enlaces simbólicos.")
+            return
         if not os.path.lexists(target):
             self.send_json_error(404, "not_found", "No se encontró el recurso a borrar.")
             return
@@ -332,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         try:
-            if target.is_dir() and not target.is_symlink():
+            if target.is_dir():
                 if any(target.iterdir()):
                     self.send_json_error(
                         409, "directory_not_empty", "La carpeta no está vacía; no se borra."
@@ -364,419 +406,64 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_page(self, params):
-        current = safe_relative(params.get("path", [""])[0], self.share_dir)
-        if current is None:
-            self.send_error(403, "Ruta no permitida")
+    def status_payload(self):
+        read_only = getattr(self.server, "read_only", False)
+        token_required = self.token_configured()
+        return {
+            "status": "ok" if self.server.started_at else "starting",
+            "ready": True,
+            "version": __version__,
+            "uptime_seconds": int(time.monotonic() - self.server.started_at),
+            "directory": str(self.server.directory),
+            "bind": self.server.bind_address,
+            "port": self.server.server_port,
+            "read_only": read_only,
+            "token_required": token_required,
+            "crud_enabled": token_required and not read_only,
+            "max_upload_mb": getattr(self.server, "max_upload_mb", 0),
+        }
+
+    def send_index(self):
+        self.serve_static_file("index.html")
+
+    def send_static(self, url_path):
+        self.serve_static_file(url_path[len("/static/"):])
+
+    def serve_static_file(self, relative):
+        safe = lexical_relative(relative)
+        if not safe:
+            self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
             return
-
-        target = self.share_dir if not current else self.share_dir / current
-        if not target.is_dir():
-            self.send_error(404, "Carpeta no encontrada")
+        try:
+            resolved = (STATIC_DIR / safe).resolve()
+        except OSError:
+            resolved = None
+        if resolved is None or not resolved.is_relative_to(STATIC_DIR.resolve()):
+            self.send_json_error(403, "path_forbidden", "Ruta no permitida.")
             return
-
-        entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
-        rows = []
-        if current:
-            parent = str(Path(current).parent)
-            if parent == ".":
-                parent = ""
-            rows.append(
-                f'<li class="dir">'
-                f'<a href="/?path={urllib.parse.quote(parent, safe="/")}">..</a>'
-                f'<span class="meta">carpeta superior</span></li>'
-            )
-
-        for entry in entries:
-            rel = f"{current}/{entry.name}" if current else entry.name
-            if entry.is_dir():
-                rows.append(
-                    f'<li class="dir">'
-                    f'<a href="/?path={urllib.parse.quote(rel, safe="/")}">📁 {html.escape(entry.name)}</a>'
-                    f'<span class="meta">carpeta</span></li>'
-                )
-            elif entry.is_file():
-                rows.append(
-                    f'<li class="file">'
-                    f'<a class="name" href="/download?path={urllib.parse.quote(rel, safe="/")}">{html.escape(entry.name)}</a>'
-                    f'<span class="meta">{human_size(entry.stat().st_size)}</span></li>'
-                )
-
-        rows_html = "".join(rows) or '<li class="empty">Carpeta vacía</li>'
-
-        uploaded = params.get("uploaded", [""])[0] == "1"
-        status = '<div class="ok" id="status">Subida completada.</div>' if uploaded else '<div id="status" role="status"></div>'
-
-        body = f"""<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>WebShare</title>
-  <style>
-    :root {{
-      color-scheme: light dark;
-      --bg: #0f1115;
-      --panel: #181b23;
-      --panel-2: #222633;
-      --text: #f3f5fa;
-      --muted: #b8bfd1;
-      --border: #3a4052;
-      --accent: #4f8cff;
-      --accent-2: #76a5ff;
-      --ok: #35c46c;
-      --drop: rgba(79,140,255,.12);
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      min-height: 100vh;
-      background: radial-gradient(circle at top, #171a22 0%, var(--bg) 68%);
-      color: var(--text);
-      font: 15px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-    }}
-    .shell {{
-      width: min(980px, calc(100vw - 24px));
-      margin: 20px auto;
-      display: grid;
-      gap: 16px;
-    }}
-    .hero, .card {{
-      background: color-mix(in srgb, var(--panel) 92%, transparent);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      box-shadow: 0 12px 40px rgba(0,0,0,.18);
-    }}
-    .hero {{
-      padding: 16px 18px;
-      background: linear-gradient(135deg, #1d2230, #12151d);
-    }}
-    .hero h1 {{
-      margin: 0 0 8px;
-      font-size: 1.55rem;
-    }}
-    .hero .facts {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 16px;
-      color: var(--muted);
-      font-size: .95rem;
-    }}
-    .hero .facts strong {{ color: var(--text); }}
-    .grid {{
-      display: grid;
-      grid-template-columns: 1.35fr .95fr;
-      gap: 16px;
-    }}
-    @media (max-width: 780px) {{
-      .grid {{ grid-template-columns: 1fr; }}
-    }}
-    .card {{ padding: 18px; }}
-    h2 {{ margin: 0 0 12px; font-size: 1.08rem; }}
-    .path {{
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 12px;
-      color: var(--muted);
-      font-size: .92rem;
-    }}
-    .path code {{
-      color: var(--text);
-      background: rgba(255,255,255,.06);
-      padding: 2px 6px;
-      border-radius: 6px;
-    }}
-    .toolbar {{
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-    }}
-    .search {{
-      flex: 1;
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: var(--panel-2);
-      color: var(--text);
-    }}
-    ul {{
-      list-style: none;
-      margin: 0;
-      padding: 0;
-      max-height: 54vh;
-      overflow: auto;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: rgba(255,255,255,.02);
-    }}
-    li {{
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 10px 12px;
-      border-bottom: 1px solid rgba(255,255,255,.06);
-    }}
-    li:last-child {{ border-bottom: 0; }}
-    .name {{
-      color: var(--accent-2);
-      text-decoration: none;
-      overflow-wrap: anywhere;
-    }}
-    .name:hover {{ text-decoration: underline; }}
-    .meta {{ color: var(--muted); white-space: nowrap; font-size: .86rem; }}
-    .empty {{ color: var(--muted); }}
-    .dir a {{ color: var(--accent-2); text-decoration: none; }}
-    .dir a:hover {{ text-decoration: underline; }}
-    .dropzone {{
-      position: relative;
-      min-height: 150px;
-      padding: 20px;
-      border: 2px dashed var(--border);
-      border-radius: 14px;
-      background: var(--drop);
-      display: grid;
-      place-items: center;
-      text-align: center;
-      cursor: pointer;
-      transition: .15s ease;
-    }}
-    .dropzone:hover, .dropzone.dragover {{
-      border-color: var(--accent);
-      background: rgba(79,140,255,.18);
-      transform: translateY(-1px);
-    }}
-    .dropzone input {{
-      position: absolute;
-      inset: 0;
-      opacity: 0;
-      cursor: pointer;
-    }}
-    .dropzone strong {{ display: block; margin-bottom: 4px; }}
-    .info {{
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-top: 12px;
-      color: var(--muted);
-    }}
-    button {{
-      border: 0;
-      border-radius: 10px;
-      padding: 10px 16px;
-      font-weight: 700;
-      color: white;
-      background: linear-gradient(135deg, var(--accent), #6ea0ff);
-      cursor: pointer;
-    }}
-    button:disabled {{
-      opacity: .6;
-      cursor: wait;
-    }}
-    #progressWrap {{
-      display: grid;
-      grid-template-columns: 1fr auto auto;
-      gap: 8px;
-      align-items: center;
-      margin-bottom: 10px;
-      padding: 10px 12px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: rgba(255,255,255,.03);
-    }}
-    #progressWrap.hidden {{ display: none !important; }}
-    progress {{
-      width: 100%;
-      height: 8px;
-      accent-color: var(--accent);
-    }}
-    .ok {{
-      margin-bottom: 10px;
-      padding: 10px 12px;
-      border-radius: 10px;
-      background: rgba(53,196,108,.16);
-      border: 1px solid rgba(53,196,108,.45);
-      color: #c8ffd8;
-    }}
-    .tip {{ color: var(--muted); font-size: .88rem; margin-top: 10px; }}
-    [hidden] {{ display: none !important; }}
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <header class="hero">
-      <h1>WebShare</h1>
-      <div class="facts">
-        <span><strong>Directorio:</strong> {html.escape(str(target))}</span>
-        <span><strong>Puerto:</strong> {self.server.server_port}</span>
-        <span><strong>Activo:</strong> <span id="uptime">00:00:00</span></span>
-        {f'<span><strong>Token:</strong> activo en subidas</span>' if getattr(self.server, "write_token", "") else ""}
-      </div>
-    </header>
-
-    <div class="grid">
-      <section class="card">
-        <h2>Carpeta compartida</h2>
-        <div class="path">
-          <span>Ruta actual:</span>
-          <code>{html.escape("/" + current if current else "/")}</code>
-          {f'<a class="name" href="/?path={urllib.parse.quote("" if Path(current).parent == Path(".") else str(Path(current).parent), safe="/")}">Volver</a>' if current else ""}
-        </div>
-        <div class="toolbar">
-          <input id="filter" class="search" type="search" placeholder="Filtrar archivos y carpetas...">
-        </div>
-        <ul id="fileList">{rows_html}</ul>
-      </section>
-
-      <section class="card">
-        <h2>Subir para la contraparte</h2>
-        {status}
-        <form id="uploadForm" method="post" action="/upload" enctype="multipart/form-data">
-          <input type="hidden" name="current_path" value="{html.escape(current)}">
-          {f'<input type="hidden" name="token" value="{html.escape(self.server.write_token)}">' if getattr(self.server, "write_token", "") else ""}
-          <label class="dropzone" id="dropzone">
-            <span id="dropText">Arrastra aquí o haz clic para elegir archivos</span>
-            <input id="fileInput" type="file" name="file" multiple required>
-          </label>
-          <div id="progressWrap" hidden>
-            <progress id="progress" max="100" value="0"></progress>
-            <span id="progressText">0%</span>
-            <span id="progressBytes" class="meta"></span>
-          </div>
-          <div class="info">
-            <span id="selectedCount">Ningún archivo seleccionado</span>
-            <button id="submitBtn" type="submit">Subir</button>
-          </div>
-        </form>
-        <p class="tip">Los archivos subidos se guardan en la carpeta actual. Para videos grandes, mejor usar SSH/SCP.</p>
-      </section>
-    </div>
-  </div>
-
-  <script>
-    const startedAt = {int(self.server.started_at_wall * 1000)};
-    const uptimeEl = document.getElementById('uptime');
-    function formatElapsedWhole(totalSeconds) {{
-      totalSeconds = Math.max(0, Math.floor(totalSeconds));
-      const days = Math.floor(totalSeconds / 86400);
-      let rest = totalSeconds % 86400;
-      const hours = Math.floor(rest / 3600);
-      rest = rest % 3600;
-      const minutes = Math.floor(rest / 60);
-      const seconds = rest % 60;
-      if (days) return `${{days}}d ${{String(hours).padStart(2, '0')}}:${{String(minutes).padStart(2, '0')}}:${{String(seconds).padStart(2, '0')}}`;
-      return `${{String(hours).padStart(2, '0')}}:${{String(minutes).padStart(2, '0')}}:${{String(seconds).padStart(2, '0')}}`;
-    }}
-    function updateUptime() {{
-      uptimeEl.textContent = formatElapsedWhole((Date.now() - startedAt) / 1000);
-    }}
-    updateUptime();
-    setInterval(updateUptime, 1000);
-
-    const filter = document.getElementById('filter');
-    const list = document.getElementById('fileList');
-    const form = document.getElementById('uploadForm');
-    const fileInput = document.getElementById('fileInput');
-    const dropzone = document.getElementById('dropzone');
-    const dropText = document.getElementById('dropText');
-    const selectedCount = document.getElementById('selectedCount');
-    const submitBtn = document.getElementById('submitBtn');
-    const status = document.getElementById('status');
-    const progressWrap = document.getElementById('progressWrap');
-    const progress = document.getElementById('progress');
-    const progressText = document.getElementById('progressText');
-    const progressBytes = document.getElementById('progressBytes');
-
-
-    function updateSelected() {{
-      const n = fileInput.files.length;
-      selectedCount.textContent = n ? n + ' archivo(s) seleccionado(s)' : 'Ningún archivo seleccionado';
-      dropText.textContent = n ? n + ' archivo(s) listos para subir' : 'Arrastra aquí o haz clic para elegir archivos';
-    }}
-
-    filter?.addEventListener('input', () => {{
-      list.querySelectorAll('li').forEach(li => {{
-        li.style.display = !filter.value.trim() || li.textContent.toLowerCase().includes(filter.value.toLowerCase()) ? '' : 'none';
-      }});
-    }});
-
-    dropzone.addEventListener('dragover', e => {{ e.preventDefault(); dropzone.classList.add('dragover'); }});
-    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-    dropzone.addEventListener('drop', e => {{
-      e.preventDefault();
-      dropzone.classList.remove('dragover');
-      if (e.dataTransfer.files.length) {{
-        fileInput.files = e.dataTransfer.files;
-        updateSelected();
-        form.dispatchEvent(new Event('submit', {{ cancelable: true, bubbles: true }}));
-      }}
-    }});
-    fileInput.addEventListener('change', updateSelected);
-
-    form.addEventListener('submit', (event) => {{
-      event.preventDefault();
-      if (submitBtn.disabled) return;
-      const files = fileInput.files;
-      if (!files || !files.length) {{
-        if (status) status.textContent = 'Selecciona al menos un archivo.';
-        return;
-      }}
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Subiendo...';
-      if (status) status.textContent = 'Subiendo archivo(s)...';
-      progressWrap.hidden = false;
-      progress.value = 0;
-      progressText.textContent = '0%';
-      progressBytes.textContent = '0 B / 0 B';
-
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', form.action, true);
-      xhr.upload.onprogress = (event) => {{
-        if (event.lengthComputable) {{
-          const percent = Math.round((event.loaded / event.total) * 100);
-          progress.value = percent;
-          progressText.textContent = percent + '%';
-          progressBytes.textContent = bytesLabel(event.loaded) + ' / ' + bytesLabel(event.total);
-        }}
-      }};
-      xhr.onload = () => {{
-        if (xhr.status >= 200 && xhr.status < 400) {{
-          window.location.assign(xhr.responseURL || ('/?path=' + encodeURIComponent(document.querySelector('input[name=current_path]').value) + '&uploaded=1'));
-        }} else {{
-          resetBusy('Subida fallida: ' + (xhr.statusText || xhr.status));
-          if (status) status.textContent = 'Error al subir (HTTP ' + xhr.status + ').';
-        }}
-      }};
-      xhr.onerror = () => resetBusy('Error de red durante la subida.');
-      xhr.send(new FormData(form));
-    }});
-
-    function resetBusy(message) {{
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Subir';
-      if (status) status.textContent = message;
-    }}
-    function bytesLabel(bytes) {{
-      if (bytes < 1024) return bytes + ' B';
-      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
-      return (bytes / (1024 * 1024)).toFixed(1) + ' MiB';
-    }}
-
-
-    const params = new URLSearchParams(location.search);
-    if (status && params.get('uploaded') === '1') {{
-      status.textContent = 'Subida completada.';
-      setTimeout(() => status.textContent = '', 4000);
-    }}
-  </script>
-</body>
-</html>""".encode()
-
+        if not resolved.is_file():
+            self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
+            return
+        try:
+            stat = resolved.stat()
+            body = resolved.read_bytes()
+        except OSError:
+            self.send_json_error(500, "read_failed", "No se pudo leer el recurso.")
+            return
+        etag = f'"{int(stat.st_mtime)}-{stat.st_size}"'
+        self._allow_cache = True
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        ctype = CONTENT_TYPES.get(Path(safe).suffix.lower(), "application/octet-stream")
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 
@@ -874,26 +561,26 @@ class Handler(BaseHTTPRequestHandler):
     def send_version(self):
         self.send_json(200, {"version": __version__})
 
-    def get_write_token(self):
+    def drain_request_body(self, limit):
+        """Read and discard up to `limit` bytes so over-limit clients can finish
+        sending and still read the error response (avoids a connection reset)."""
+        if limit <= 0:
+            return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            return ""
-        # Token may come from headers or multipart. For simplicity, check Authorization first.
-        auth = self.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            return auth[len("Bearer "):]
-        # Parse query as fallback token=...
-        url = urllib.parse.urlsplit(self.path)
-        query = urllib.parse.parse_qs(url.query)
-        token = query.get("token", [""])[0]
-        if token:
-            return token
-        # Multipart token is resolved later by receive_files; here empty means unresolved.
-        return ""
+            self.connection.settimeout(5)
+        except OSError:
+            pass
+        remaining = limit
+        while remaining > 0:
+            try:
+                chunk = self.rfile.read(min(65536, remaining))
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            remaining -= len(chunk)
 
     def receive_files(self):
-        url = urllib.parse.urlsplit(self.path)
         ctype = self.headers.get("Content-Type", "")
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -906,6 +593,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400, "Solicitud de subida vacía o sin Content-Length")
             return
         if length > max_upload:
+            self.drain_request_body(min(length, UPLOAD_DRAIN_LIMIT))
             self.send_error(
                 413,
                 f"Subida demasiado grande ({length} bytes); límite: {max_upload} bytes",
@@ -936,9 +624,11 @@ class Handler(BaseHTTPRequestHandler):
             elif name_value == "token":
                 supplied_token = data.decode("utf-8", "replace").strip()
 
-        if getattr(self.server, "write_token", ""):
-            candidate = supplied_token or self.get_write_token()
-            if candidate != self.server.write_token:
+        if self.token_configured():
+            candidate = supplied_token or self.extract_token()
+            if not hmac.compare_digest(
+                candidate.encode("utf-8"), self.server.write_token.encode("utf-8")
+            ):
                 self.send_error(403, "Token inválido en la subida")
                 return
 
@@ -1011,9 +701,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "script-src 'self' 'unsafe-inline'; img-src 'self' data:;",
+            "script-src 'self'; img-src 'self' data:; font-src 'self';",
         )
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+        if not getattr(self, "_allow_cache", False):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
         super().end_headers()
 
 

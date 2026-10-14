@@ -237,6 +237,35 @@ class ApiIntegrationWebShare(unittest.TestCase):
         self.assertEqual(response.status, 404)
         self.assertEqual(body["error"], "not_found")
 
+class PathSafety(unittest.TestCase):
+    def test_encoded_reversal_path(self):
+        root = Path(tempfile.mkdtemp())
+        root.mkdir(exist_ok=True)
+        self.assertIsNone(webshare.safe_relative("%2e%2e/secret", root))
+        self.assertIsNone(webshare.safe_relative("%2e%2e%2f%2e%2e", root))
+        self.assertIsNone(webshare.safe_relative("braian\x00file", root))
+
+    def test_reverse_path_in_query(self):
+        root = Path(tempfile.mkdtemp())
+        root.mkdir(exist_ok=True)
+        self.assertIsNone(webshare.safe_relative("a/../../b", root))
+
+    def test_safe_target_rejects_controls_and_travel(self):
+        root = Path(tempfile.mkdtemp())
+        root.mkdir(exist_ok=True)
+        self.assertIsNone(webshare.safe_target(root, ".."))
+        self.assertIsNone(webshare.safe_target(root, "file\x00.txt"))
+        self.assertEqual(webshare.safe_target(root, "../x"), root.resolve() / "x")
+        self.assertEqual(webshare.safe_target(root, "subdir\\file.txt"), root.resolve() / "file.txt")
+        self.assertEqual(webshare.safe_target(root, "allowed.txt"), root.resolve() / "allowed.txt")
+
+    def test_sandbox_root_stays_fixed(self):
+        root = Path(tempfile.mkdtemp())
+        root.mkdir(exist_ok=True)
+        self.assertEqual(webshare.safe_relative("/", root), "")
+        self.assertEqual(webshare.safe_relative(".", root), "")
+        self.assertIsNone(webshare.safe_relative("../../../", root))
+
 
 if __name__ == "__main__":
     unittest.main()

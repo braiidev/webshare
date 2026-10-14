@@ -106,3 +106,34 @@ Pendiente definir por el mantenedor.
 ```sh
 python3 -m unittest tests.test_webshare -v
 ```
+
+## Seguridad de Sandbox
+
+Todas las operaciones de lectura, escritura, borrado y listado se restringen a la
+carpeta compartida (`--dir`). El servidor aplica:
+
+- rechazo de paths absolutos;
+- rechazo de secuencias de reversión (`..`, `%2e%2e`, `%2e%2e%2f`, etc.);
+- normalización de barras invertidas y navegación relativa;
+- resolución de symlinks con verificación de pertenencia al root;
+- protección de carpetas fuera del sandbox;
+- evitación de path traversal por query, parámetro `path` o campos multipart.
+
+### Modo solo lectura
+```sh
+webshare --read-only
+```
+
+### Token de escritura
+```sh
+WEBSHARE_TOKEN=secret webshare
+```
+
+### Operaciones destructivas
+- borrado de archivos solo exact name match;
+- no permite borrar root;
+- directorios solo vacíos.
+
+### Logs
+- logs HTTP pueden desactivarse con `--quiet`;
+- por defecto no se usa request-log explícito para nombres sensibles.

@@ -15,7 +15,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 REPO_DIR = Path(__file__).resolve().parent
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
 BIN_PATH = Path.home() / ".local/bin/webshare"
@@ -43,23 +43,42 @@ def safe_relative(raw_path, root):
     if raw_path is None:
         return ""
     raw_path = urllib.parse.unquote(raw_path).strip().replace("\\", "/")
-    raw_path = raw_path.strip("/")
-    if raw_path in {"", "."}:
+    if "\x00" in raw_path:
+        return None
+    # Never permit absolute roots or explicit reversal segments, even if encoders
+    # attempt identity or traversal strings.
+    parts = []
+    for part in raw_path.split("/"):
+        if part in {"", "."}:
+            continue
+        if part in {".."} or part.startswith("..%2") or part.lower() in {"..%5c"}:
+            return None
+        # Normalize drive-like and alternate delimiters just in case.
+        if any(ch in part for ch in ("\\", ":", "\x00")):
+            return None
+        parts.append(part)
+    if not parts:
         return ""
-    candidate = (root / raw_path).resolve()
+    normalized = "/".join(parts)
+    root_resolved = root.resolve()
+    candidate = (root / normalized).resolve()
     try:
-        relative = candidate.relative_to(root.resolve())
+        relative = candidate.relative_to(root_resolved)
     except ValueError:
         return None
     return relative.as_posix()
 
 
 def safe_target(directory, filename):
-    filename = os.path.basename(filename.replace("\\", "/"))
-    if not filename or filename in {".", ".."}:
+    filename = os.path.basename(str(filename).replace("\\", "/"))
+    if not filename or filename in {".", ".."} or "\x00" in filename or "/" in filename:
+        return None
+    if any(ord(c) < 32 for c in filename):
         return None
     target = (directory / filename).resolve()
     if target.parent != directory.resolve():
+        return None
+    if target.resolve().is_relative_to(directory.resolve()) is False:
         return None
     return target
 

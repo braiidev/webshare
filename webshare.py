@@ -15,7 +15,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"

@@ -20,9 +20,6 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas planificadas, todavía no iniciadas.
 
-- [ ] `v0.9.2` — **Tests de flujo (E2E)**: cobertura en navegador de crear carpeta,
-  renombrar, borrar y subir, incluyendo el ingreso de la clave.
-  - estado: `PENDIENTE`
 - [ ] `v0.9.3` — **Documentación operativa**: ejemplos `curl` de cada endpoint CRUD.
   - estado: `PENDIENTE`
 - [ ] `v0.10.0` — **Streaming multipart**: parser de subida con límite estricto
@@ -44,6 +41,13 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.9.2` — **Tests de flujo (HTTP, sin navegador)**: nueva clase `FlowWebShare`
+  que reproduce el recorrido real de la UI por HTTP/JSON — clave (`/api/auth`),
+  crear carpeta, subir (multipart + `X-Webshare-Token`), listar, descargar,
+  renombrar y borrar — más guardas del shell (sin token embebido), estáticos con
+  MIME/`ETag`/`304`, CSP `script-src 'self'` y verificación de "sin emoji" en la UI.
+  31/31 tests.
+  - estado: `HECHO` · tag `v0.9.2` (ver `git log`)
 - [x] `v0.9.1-bis` — **fix UI**: `#uptimeBadge` en vivo (antes solo al navegar o
   refrescar) y bordes coherentes en modo oscuro; Simplex fijaba `#eeeeee` en
   card, list-group, nav-tabs, pagination, modal, popover y offcanvas, ahora

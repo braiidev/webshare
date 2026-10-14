@@ -473,5 +473,228 @@ class CrudIntegrationWebShare(unittest.TestCase):
             self.assertEqual(ctx.exception.code, 404, attempt)
 
 
+class FlowWebShare(unittest.TestCase):
+    """Reproduce, por HTTP, el mismo recorrido que hace la interfaz web.
+
+    No usa navegador: simula las llamadas que dispara el JS (clave en
+    `X-Webshare-Token`, parámetros por query, multipart en `/upload`).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8195
+        cls.directory = tempfile.mkdtemp(prefix="webshare-flow-test-")
+        cls.token = "clave-de-flujo"
+        cls.root = Path(__file__).resolve().parents[1]
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(cls.root / "webshare.py"),
+                "--dir",
+                cls.directory,
+                "--port",
+                str(cls.port),
+                "--token",
+                cls.token,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                http.client.HTTPConnection("127.0.0.1", cls.port, timeout=0.2).connect()
+                return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+
+    def request(self, method, path, token=None, body=None, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        sent = dict(headers or {})
+        if token:
+            sent["X-Webshare-Token"] = token
+        conn.request(method, path, body=body, headers=sent)
+        response = conn.getresponse()
+        payload = response.read()
+        status = response.status
+        response_headers = dict(response.getheaders())
+        conn.close()
+        try:
+            data = json.loads(payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            data = None
+        return status, response_headers, payload, data
+
+    @staticmethod
+    def multipart(current_path, filename, content, token=None):
+        boundary = "----webshareFlowBoundary"
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="current_path"\r\n\r\n'
+            f"{current_path}\r\n"
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8")
+        tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+        body = head + content + tail
+        headers = {
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        }
+        if token:
+            headers["X-Webshare-Token"] = token
+        return body, headers
+
+    def test_browser_journey(self):
+        # 1. El shell carga y conoce los flags del servidor.
+        status, _, _, _ = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        status, _, _, info = self.request("GET", "/api/status")
+        self.assertEqual(status, 200)
+        self.assertTrue(info["token_required"])
+        self.assertTrue(info["crud_enabled"])
+
+        # 2. La UI no puede editar hasta "ingresar la clave".
+        status, _, _, error = self.request("GET", "/api/auth")
+        self.assertEqual(status, 403)
+        self.assertEqual(error["error"], "token_invalid")
+
+        status, _, _, accepted = self.request("GET", "/api/auth", token=self.token)
+        self.assertEqual(status, 200)
+        self.assertTrue(accepted["ok"])
+
+        # 3. Nueva carpeta.
+        status, _, _, created = self.request(
+            "POST", "/api/mkdir?path=&name=viaje", token=self.token
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(created["created"], "viaje")
+
+        status, _, _, listing = self.request("GET", "/api/list?path=viaje")
+        self.assertEqual(status, 200)
+        self.assertEqual(listing["entries"], [])
+
+        # 4. Subida a la carpeta actual (multipart + token por cabecera).
+        content = b"contenido de prueba\n"
+        body, headers = self.multipart("viaje", "hola.txt", content, token=self.token)
+        status, _, _, _ = self.request("POST", "/upload", body=body, headers=headers)
+        self.assertIn(status, (200, 303))
+        self.assertTrue((Path(self.directory) / "viaje" / "hola.txt").is_file())
+
+        # 5. La lista ya muestra el archivo y se puede descargar.
+        status, _, _, listing = self.request("GET", "/api/list?path=viaje")
+        self.assertEqual([item["name"] for item in listing["entries"]], ["hola.txt"])
+        status, _, downloaded, _ = self.request("GET", "/api/download?path=viaje/hola.txt")
+        self.assertEqual(status, 200)
+        self.assertEqual(downloaded, content)
+
+        # 6. Renombrar.
+        status, _, _, renamed = self.request(
+            "POST", "/api/rename?path=viaje/hola.txt&new_name=chau.txt", token=self.token
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(renamed["to"], "viaje/chau.txt")
+        self.assertTrue((Path(self.directory) / "viaje" / "chau.txt").is_file())
+        self.assertFalse((Path(self.directory) / "viaje" / "hola.txt").exists())
+
+        # 7. Borrar el archivo (confirmación por nombre) y luego la carpeta.
+        status, _, _, deleted = self.request(
+            "DELETE", "/api/delete?path=viaje/chau.txt&confirm=chau.txt", token=self.token
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(deleted["type"], "file")
+        self.assertFalse((Path(self.directory) / "viaje" / "chau.txt").exists())
+
+        status, _, _, deleted = self.request(
+            "DELETE", "/api/delete?path=viaje&confirm=viaje", token=self.token
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(deleted["type"], "directory")
+        self.assertFalse((Path(self.directory) / "viaje").exists())
+
+    def test_wrong_key_rejected_everywhere(self):
+        status, _, _, error = self.request("GET", "/api/auth", token="clave-mala")
+        self.assertEqual(status, 403)
+        self.assertEqual(error["error"], "token_invalid")
+
+        status, _, _, error = self.request(
+            "POST", "/api/mkdir?path=&name=intruso", token="clave-mala"
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(error["error"], "token_invalid")
+        self.assertFalse((Path(self.directory) / "intruso").exists())
+
+        body, headers = self.multipart("", "intruso.txt", b"x", token="clave-mala")
+        status, _, _, _ = self.request("POST", "/upload", body=body, headers=headers)
+        self.assertEqual(status, 403)
+        self.assertFalse((Path(self.directory) / "intruso.txt").exists())
+
+    def test_shell_references_assets_and_hides_token(self):
+        status, headers, payload, _ = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", headers.get("Content-Type", ""))
+        html = payload.decode("utf-8")
+        self.assertIn("/static/js/main.js", html)
+        self.assertIn("/static/css/style.css", html)
+        self.assertIn("data-bs-theme", html)
+        self.assertNotIn(self.token, html)
+
+    def test_static_assets_and_csp(self):
+        for path, needle in (
+            ("/static/css/style.css", "text/css"),
+            ("/static/js/main.js", "text/javascript"),
+            ("/static/js/ui.js", "text/javascript"),
+            ("/static/vendor/bootstrap.min.css", "text/css"),
+        ):
+            status, headers, payload, _ = self.request("GET", path)
+            self.assertEqual(status, 200, path)
+            self.assertIn(needle, headers.get("Content-Type", ""), path)
+            self.assertTrue(payload, path)
+
+        status, headers, _, _ = self.request("GET", "/")
+        csp = headers.get("Content-Security-Policy", "")
+        self.assertIn("script-src 'self'", csp)
+        self.assertNotIn("script-src 'self' 'unsafe-inline'", csp)
+        self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
+
+    def test_static_asset_supports_conditional_get(self):
+        status, headers, _, _ = self.request("GET", "/static/css/style.css")
+        etag = headers.get("ETag")
+        self.assertEqual(status, 200)
+        self.assertTrue(etag)
+        status, _, _, _ = self.request(
+            "GET", "/static/css/style.css", headers={"If-None-Match": etag}
+        )
+        self.assertEqual(status, 304)
+
+    def test_ui_has_no_emoji(self):
+        ranges = [
+            (0x1F000, 0x1FAFF),
+            (0x2600, 0x26FF),
+            (0x2700, 0x27BF),
+            (0x2B00, 0x2BFF),
+            (0xFE0F, 0xFE0F),
+        ]
+
+        def has_emoji(text):
+            return sorted({ch for ch in text if any(a <= ord(ch) <= b for a, b in ranges)})
+
+        targets = [self.root / "static" / "index.html", self.root / "static" / "css" / "style.css"]
+        targets += sorted((self.root / "static" / "js").glob("*.js"))
+        for target in targets:
+            found = has_emoji(target.read_text(encoding="utf-8"))
+            self.assertEqual(found, [], f"{target.name} contiene emoji: {found}")
+
+
 if __name__ == "__main__":
     unittest.main()

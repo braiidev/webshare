@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import html
+import json
 import os
 import re
 import socket
@@ -14,7 +15,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 REPO_DIR = Path(__file__).resolve().parent
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
 BIN_PATH = Path.home() / ".local/bin/webshare"
@@ -89,10 +90,30 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/":
             self.send_page(params)
-        elif url.path == "/health":
-            body = b"OK\n"
+        elif url.path in ("/health", "/readyz"):
+            payload = {
+                "status": "ok" if self.server.started_at else "starting",
+                "ready": True,
+                "version": __version__,
+                "uptime_seconds": int(time.monotonic() - self.server.started_at),
+                "directory": str(self.server.directory),
+                "bind": self.server.bind_address,
+                "port": self.server.server_port,
+                "read_only": getattr(self.server, "read_only", False),
+                "max_upload_mb": getattr(self.server, "max_upload_mb", 0),
+            }
+            if url.path == "/readyz":
+                payload["path"] = "readyz"
+            body = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif url.path == "/version":
+            body = (json.dumps({"version": __version__}, sort_keys=True) + "\n").encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -644,6 +665,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, fmt, *args):
+        if not getattr(self.server, "log_requests", True):
+            return
         user_agent = self.headers.get("User-Agent", "-")
         print(f"[webshare] {self.address_string()} - {fmt % args} UA={user_agent!r}")
 
@@ -727,6 +750,7 @@ def main():
     parser.add_argument("--update", action="store_true", help="actualiza repositorio y symlink")
     parser.add_argument("--uninstall", action="store_true", help="desinstala symlink y repo opcional")
     parser.add_argument("--yes", action="store_true", help="confirma cambios destructivos")
+    parser.add_argument("--quiet", action="store_true", help="solo muestra arranque y errores importantes")
     args = parser.parse_args()
 
     if args.version:
@@ -749,6 +773,8 @@ def main():
     httpd.started_at_wall = time.time()
     httpd.read_only = args.read_only
     httpd.max_upload_bytes = max(1, args.max_upload_mb) * 1024 * 1024
+    httpd.max_upload_mb = max(1, args.max_upload_mb)
+    httpd.log_requests = not args.quiet
 
     hostname = socket.gethostname()
     try:
@@ -763,6 +789,8 @@ def main():
     print(f"  Max upload: {args.max_upload_mb} MB")
     if args.read_only:
         print("  Modo: solo lectura")
+    if args.quiet:
+        print("  Logs HTTP: desactivados")
     print("  Ctrl+C para detener.")
 
     server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)

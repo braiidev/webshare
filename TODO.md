@@ -1,18 +1,9 @@
 # Proyecto — Webshare
 
-Plan de trabajo por etapas **SemVer**. Cada casilla del tablero es una tarea
-atomizada (una sola cosa, verificable y etiquetable).
-
-## Método de trabajo
-
-1. **Atomizar**: dividir el objetivo en la tarea más chica posible.
-2. **Etiquetar**: asignarle un `vMAYOR.MENOR.PARCHE` (SemVer).
-3. **Planificar**: la tarea nueva entra en **NEXT**.
-4. **Ejecutar**: al empezar, se mueve a **DOING**.
-5. **Cerrar**: cuando pasa tests y se crea el commit con su tag, se mueve a **DONE**.
-6. **Sincronizar**: el tablero se corrige desde el `git log`, nunca al revés.
-
-Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
+Tablero de trabajo por etapas **SemVer** (Kanban). Cada casilla es una tarea
+atomizada (una sola cosa, verificable y etiquetable). La verdad se lee del
+`git log`; el método de trabajo vive fuera del repo, en la skill global
+`semver-kanban`.
 
 ---
 
@@ -160,21 +151,3 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 - [x] `v0.0` — docs: documentar WebShare y roadmap.
   - estado: `HECHO` · commit `150bd3e` · tag `v0.0`
 
----
-
-## NOTA IMPORTANTE
-
-El estado real del proyecto **se lee del log de git**, no del tablero. Antes de
-planificar o de mover una tarjeta, verificar siempre con:
-
-```sh
-git log --oneline --decorate --all
-git tag --sort=-creatordate
-git status --short
-```
-
-Reglas:
-
-- Una tarea pasa a `DONE` **solo** cuando su commit ya quedó finalizado con tag SemVer.
-- Una tarea en `DOING` debe tener su commit en curso, no solo la idea escrita.
-- Si el tablero y el `git log` no coinciden, **manda el `git log`** y se corrige el tablero.

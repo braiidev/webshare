@@ -548,9 +548,20 @@ def self_update():
         raise SystemExit(1)
 
     log_step("Consultando origen remoto con git fetch --all...")
-    subprocess.run(["git", "-C", str(repo), "fetch", "--all"], check=True, stdout=subprocess.DEVNULL)
+    try:
+        subprocess.run(["git", "-C", str(repo), "fetch", "--all"], check=True, stdout=subprocess.DEVNULL)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        log_step(f"Actualización remota falló: {exc}")
+        log_step("Verificá conexión a Internet y que el repositorio exista en GitHub.")
+        raise SystemExit(1)
+
     log_step("Aplicando cambios con git pull --ff-only...")
-    subprocess.run(["git", "-C", str(repo), "pull", "--ff-only"], check=True)
+    try:
+        subprocess.run(["git", "-C", str(repo), "pull", "--ff-only"], check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        log_step(f"git pull falló: {exc}")
+        log_step("Se respetan los archivos actuales. No se aplicó ningún cambio.")
+        raise SystemExit(1)
     target = repo / "webshare.py"
     target.chmod(0o755)
     log_step("Permisos de ejecución asegurados en webshare.py.")

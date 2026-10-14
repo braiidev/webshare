@@ -37,7 +37,7 @@
 - [x] Límite configurable de tamaño.
 - [ ] Parser multipart con streaming o límite estricto previo.
 - [ ] Cleanup de archivos temporales.
-- [ ] Upload en modo solo lectura desactivado.
+- [x] Upload en modo solo lectura desactivado.
 
 ## v0.5 — API y operación
 
@@ -52,3 +52,12 @@
 - [ ] Documentación completa.
 - [ ] Instalador verificado.
 - [ ] Primera release etiquetada.
+
+### v0.6 — Hardening de tests
+- [x] Tests de integración para `/health`, `/version`, headers y traversal.
+- [x] Tests de upload válido y 413.
+- [ ] Más cobertura para Symlinks y permisos.
+
+### v0.6.1 — Documentación
+- [x] Opciones documentadas.
+- [x] Endpoints y seguridad documentados.

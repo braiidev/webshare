@@ -63,3 +63,41 @@ python3 webshare.py --port 8123
 ## Licencia
 
 Pendiente definir por el mantenedor.
+
+
+## Opciones
+
+| Opción | Default | Descripción |
+| --- | --- | --- |
+| `--dir` | `~/Descargas` | Carpeta compartida. |
+| `--bind` | `0.0.0.0` | Dirección de escucha. |
+| `--port` | `8000` | Puerto HTTP. |
+| `--read-only` | apagado | Desactiva uploads, descargas sí permitidas. |
+| `--max-upload-mb` | `5120` | Límite de subida. |
+| `--token` / `WEBSHARE_TOKEN` | vacío | Token requerido para uploads. |
+| `--quiet` | apagado | Desactiva logs HTTP. |
+| `--update` | - | Actualiza repo y symlink. |
+| `--uninstall` | - | Desinstala symlink/repo. |
+| `--version` | - | Muestra versión. |
+
+## Endpoints
+
+- `GET /` interfaz web
+- `GET /health` JSON con uptime, versión, directorio y read-only
+- `GET /version` JSON con versión
+- `GET /download?path=...` descarga streaming
+- `POST /upload` multipart
+
+## Seguridad
+
+- Path traversal protegido.
+- Validación de nombres.
+- Headers: CSP, nosniff, frame deny, referrer no, cache no-store.
+- Límites de tamaño de upload.
+- Token opcional.
+- Modo solo lectura.
+
+## Desarrollo y pruebas
+```sh
+python3 -m unittest tests.test_webshare -v
+```

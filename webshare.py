@@ -14,7 +14,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 REPO_DIR = Path(__file__).resolve().parent
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
 BIN_PATH = Path.home() / ".local/bin/webshare"
@@ -601,12 +601,12 @@ def self_update():
         log_step("Verificá conexión a Internet y que el repositorio exista en GitHub.")
         raise SystemExit(1)
 
-    log_step("Aplicando cambios con git pull --ff-only...")
+    log_step("Aplicando cambios desde origin/main con git pull --ff-only ...")
     try:
-        subprocess.run(["git", "-C", str(repo), "pull", "--ff-only"], check=True)
+        subprocess.run(["git", "-C", str(repo), "pull", "--ff-only", "origin", "main"], check=True)
     except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
         log_step(f"git pull falló: {exc}")
-        log_step("Se respetan los archivos actuales. No se aplicó ningún cambio.")
+        log_step("Verificá que la rama local tenga el tracking esperado o ejecutá git pull manual.")
         raise SystemExit(1)
     target = repo / "webshare.py"
     target.chmod(0o755)

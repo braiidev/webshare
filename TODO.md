@@ -25,6 +25,12 @@ atomizada (una sola cosa, verificable y etiquetable). La verdad se lee del
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.13.0` — **Validación del header `Host` (anti DNS rebinding)**: se
+  aceptan IP literales, `localhost` o el valor de `--bind`; cualquier otro
+  dominio responde `400 invalid_host`. Documenta además que el instalador confía
+  en HTTPS hacia GitHub (sin firmas ni commit fijo). Texto del tablero movido a
+  la skill global `semver-kanban`. 75/75 tests.
+  - estado: `HECHO` · tag `v0.13.0` (ver `git log`)
 - [x] `v0.12.0` — **Subidas seguras por defecto**: antes, sin token, cualquiera
   en la LAN podía subir archivos (el CRUD sí quedaba bloqueado). Ahora las
   subidas también exigen token; sin token responden `403 upload_disabled`. El

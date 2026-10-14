@@ -37,6 +37,10 @@ curl -fsSL https://raw.githubusercontent.com/braiidev/webshare/main/install.sh |
 El instalador coloca el código en `~/.local/share/webshare` y crea el comando
 `~/.local/bin/webshare`. No requiere `sudo`.
 
+El instalador clona el repositorio por **HTTPS desde GitHub** y confía en ese
+canal (TLS + repo oficial); no verifica firmas ni fija un commit. Si querés
+revisarlo antes, descargalo y leelo: `curl -fsSL .../install.sh -o install.sh`.
+
 ## Uso
 
 ```sh
@@ -45,6 +49,7 @@ webshare --port 8080
 webshare --dir /carpeta/a/compartir --bind 0.0.0.0
 webshare --read-only
 webshare --token "mi-token-secreto"
+webshare --allow-anonymous-upload
 WEBSHARE_TOKEN=... webshare
 ```
 
@@ -184,6 +189,9 @@ valor por defecto (`~/Descargas`).
 - Resolución de symlinks con verificación de pertenencia al root; en el CRUD se
   rechazan explícitamente los enlaces simbólicos.
 - Validación estricta de nombres (un solo segmento, sin separadores ni control).
+- Validación del header `Host`: se aceptan IP literales, `localhost` y el valor de
+  `--bind`; cualquier otro dominio se rechaza (`400 invalid_host`), lo que corta
+  ataques de DNS rebinding.
 - El token de escritura no se embebe en el HTML; vive en `sessionStorage` y se
   transmite por cabecera.
 - Headers HTTP: CSP con `script-src 'self'` (scripts externos propios),

@@ -1600,5 +1600,71 @@ class UploadDisabledWebShare(unittest.TestCase):
         self.assertFalse((Path(self.directory) / "x.txt").exists())
 
 
+class HostValidationWebShare(unittest.TestCase):
+    """Solo se aceptan Host con IP literal, localhost o --bind (anti DNS rebinding)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8204
+        cls.directory = tempfile.mkdtemp(prefix="webshare-host-")
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                "--dir",
+                cls.directory,
+                "--port",
+                str(cls.port),
+                "--quiet",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{cls.port}/api/status", timeout=0.5
+                ):
+                    break
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+        shutil.rmtree(cls.directory, ignore_errors=True)
+
+    def request_with_host(self, host):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.putrequest("GET", "/api/status", skip_host=True, skip_accept_encoding=True)
+        conn.putheader("Host", host)
+        conn.endheaders()
+        response = conn.getresponse()
+        payload = response.read()
+        conn.close()
+        return response.status, payload
+
+    def test_ip_literal_is_accepted(self):
+        status, _ = self.request_with_host(f"127.0.0.1:{self.port}")
+        self.assertEqual(status, 200)
+
+    def test_localhost_is_accepted(self):
+        status, _ = self.request_with_host(f"localhost:{self.port}")
+        self.assertEqual(status, 200)
+
+    def test_foreign_domain_is_rejected(self):
+        for host in ("evil.example", f"evil.example:{self.port}", "attacker.test:80"):
+            status, payload = self.request_with_host(host)
+            self.assertEqual(status, 400, host)
+            self.assertEqual(json.loads(payload.decode("utf-8"))["error"], "invalid_host")
+
+
 if __name__ == "__main__":
     unittest.main()

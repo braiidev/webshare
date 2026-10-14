@@ -2,6 +2,7 @@
 import argparse
 import errno
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -17,7 +18,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
@@ -361,11 +362,49 @@ class Handler(BaseHTTPRequestHandler):
     def version_string(self):
         return self.server_version
 
+    def host_allowed(self):
+        """Accept only IP literals, localhost, or the configured bind address.
+
+        A missing `Host` is tolerated (HTTP/1.0). Anything else is rejected, so a
+        hostile domain resolving to this machine (DNS rebinding) is not served.
+        """
+        host = self.headers.get("Host")
+        if not host:
+            return True
+        hostname = host.strip()
+        if hostname.startswith("["):
+            end = hostname.find("]")
+            hostname = hostname[1:end] if end != -1 else hostname
+        elif hostname.count(":") == 1:
+            hostname = hostname.split(":", 1)[0]
+        hostname = hostname.strip().lower()
+        if not hostname:
+            return True
+        if hostname == "localhost":
+            return True
+        bind = str(getattr(self.server, "bind_address", "")).strip().lower()
+        if bind and bind not in ("0.0.0.0", "::") and hostname == bind:
+            return True
+        try:
+            ipaddress.ip_address(hostname)
+            return True
+        except ValueError:
+            return False
+
+    def reject_bad_host(self):
+        if self.host_allowed():
+            return False
+        self.close_connection = True
+        self.send_json_error(400, "invalid_host", "Host no permitido.")
+        return True
+
     @property
     def share_dir(self):
         return Path(self.server.directory)
 
     def do_GET(self):
+        if self.reject_bad_host():
+            return
         url = urllib.parse.urlsplit(self.path)
         params = urllib.parse.parse_qs(url.query)
 
@@ -399,6 +438,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
 
     def do_POST(self):
+        if self.reject_bad_host():
+            return
         path = urllib.parse.urlsplit(self.path).path
         if path == "/upload":
             if not self.upload_allowed():
@@ -425,6 +466,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json_error(404, "not_found", "No se encontró el recurso solicitado.")
 
     def do_DELETE(self):
+        if self.reject_bad_host():
+            return
         path = urllib.parse.urlsplit(self.path).path
         if path == "/api/delete":
             self.handle_crud(path)

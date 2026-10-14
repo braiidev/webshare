@@ -337,7 +337,7 @@ class Handler(BaseHTTPRequestHandler):
       <div class="facts">
         <span><strong>Directorio:</strong> {html.escape(str(target))}</span>
         <span><strong>Puerto:</strong> {self.server.server_port}</span>
-        <span><strong>Activo:</strong> {fmt_elapsed(time.monotonic() - self.server.started_at)}</span>
+        <span><strong>Activo:</strong> <span id="uptime">00:00:00</span></span>
       </div>
     </header>
 
@@ -375,6 +375,25 @@ class Handler(BaseHTTPRequestHandler):
   </div>
 
   <script>
+    const startedAt = {int(self.server.started_at_wall * 1000)};
+    const uptimeEl = document.getElementById('uptime');
+    function formatElapsedWhole(totalSeconds) {{
+      totalSeconds = Math.max(0, Math.floor(totalSeconds));
+      const days = Math.floor(totalSeconds / 86400);
+      let rest = totalSeconds % 86400;
+      const hours = Math.floor(rest / 3600);
+      rest = rest % 3600;
+      const minutes = Math.floor(rest / 60);
+      const seconds = rest % 60;
+      if (days) return `${{days}}d ${{String(hours).padStart(2, '0')}}:${{String(minutes).padStart(2, '0')}}:${{String(seconds).padStart(2, '0')}}`;
+      return `${{String(hours).padStart(2, '0')}}:${{String(minutes).padStart(2, '0')}}:${{String(seconds).padStart(2, '0')}}`;
+    }}
+    function updateUptime() {{
+      uptimeEl.textContent = formatElapsedWhole((Date.now() - startedAt) / 1000);
+    }}
+    updateUptime();
+    setInterval(updateUptime, 1000);
+
     const filter = document.getElementById('filter');
     const list = document.getElementById('fileList');
     const form = document.getElementById('uploadForm');
@@ -617,6 +636,7 @@ def main():
     httpd.directory = directory
     httpd.bind_address = args.bind
     httpd.started_at = time.monotonic()
+    httpd.started_at_wall = time.time()
 
     hostname = socket.gethostname()
     try:

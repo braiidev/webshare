@@ -116,6 +116,10 @@ Reglas:
   (`403 path_forbidden`); uno interno sí se resuelve con normalidad.
 - Los permisos denegados del sistema de archivos responden con JSON limpio
   (`500 read_failed`, `create_failed`, `delete_failed`) y nunca cortan la conexión.
+- Los archivos y carpetas ocultos (`.algo`) se listan y gestionan como cualquier otro.
+- Los temporales de subida (`.webshare-upload-*.part`) son internos: no aparecen
+  en el listado, su acceso (descargar, info, renombrar, borrar) responde
+  `403 path_forbidden` y no se pueden crear con ese nombre (`400 invalid_name`).
 - Todo queda dentro del sandbox (`--dir`).
 
 ## Ejemplos con `curl`

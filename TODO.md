@@ -34,6 +34,17 @@ Estados permitidos: `PENDIENTE`, `EN CURSO`, `HECHO`.
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+> Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
+
+- [x] `v0.10.2` — **Higiene de temporales de subida**: el archivo temporal
+  `.webshare-upload-*.part` se creaba en la raíz del recurso compartido y, mientras
+  la subida estaba en curso, aparecía en el listado y era accesible por la API. Ahora
+  está reservado: se filtra de `/api/list`, se rechaza su acceso (`403 path_forbidden`
+  en descargar/info/renombrar/borrar) y no se puede crear con ese nombre
+  (`400 invalid_name`). Se documenta además que los archivos y carpetas ocultos
+  (`.algo`) se listan y gestionan con normalidad. Nueva clase `SpoolHygieneWebShare`.
+  60/60 tests.
+  - estado: `HECHO` · tag `v0.10.2` (ver `git log`)
 - [x] `v0.10.1` — **Cobertura de symlinks y permisos + robustez**: dos clases nuevas
   de tests de borde. `SymlinkWebShare` fija que un symlink que escapa del sandbox no
   se descarga, lista, renombra, borra ni sirve de base para `mkdir`/upload

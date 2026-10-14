@@ -1244,5 +1244,133 @@ class PermissionsWebShare(unittest.TestCase):
         self.assertTrue(body["ready"])
 
 
+class SpoolHygieneWebShare(unittest.TestCase):
+    """Los temporales internos de subida nunca se exponen por la API."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = 8201
+        cls.token = "spool-token"
+        cls.directory = Path(tempfile.mkdtemp(prefix="webshare-spool-test-"))
+        (cls.directory / "visible.txt").write_text("v", encoding="utf-8")
+        (cls.directory / "sub").mkdir()
+        (cls.directory / ".webshare-upload-leftover.part").write_text("x", encoding="utf-8")
+        (cls.directory / "sub" / ".webshare-upload-leftover.part").write_text(
+            "x", encoding="utf-8"
+        )
+        cls.proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).resolve().parents[1] / "webshare.py"),
+                "--dir",
+                str(cls.directory),
+                "--port",
+                str(cls.port),
+                "--token",
+                cls.token,
+                "--quiet",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(50):
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{cls.port}/api/status", timeout=0.5
+                ):
+                    return
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+        raise RuntimeError("WebShare did not start")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+            cls.proc.wait(timeout=5)
+        shutil.rmtree(cls.directory, ignore_errors=True)
+
+    def request(self, method, path):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request(method, path, headers={"X-Webshare-Token": self.token})
+        response = conn.getresponse()
+        raw = response.read()
+        status = response.status
+        conn.close()
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            body = raw
+        return status, body
+
+    def test_reserved_name_detection(self):
+        self.assertTrue(webshare.is_upload_temp(".webshare-upload-abc.part"))
+        self.assertFalse(webshare.is_upload_temp(".webshare-upload-abc.txt"))
+        self.assertFalse(webshare.is_upload_temp("abc.part"))
+
+    def test_spool_files_are_hidden_from_listing(self):
+        status, body = self.request("GET", "/api/list?path=")
+        self.assertEqual(status, 200)
+        names = [item["name"] for item in body["entries"]]
+        self.assertNotIn(".webshare-upload-leftover.part", names)
+        self.assertIn("visible.txt", names)
+        self.assertEqual(body["total"], len(names))
+        status, body = self.request("GET", "/api/list?path=sub")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["entries"], [])
+
+    def test_spool_files_are_not_accessible(self):
+        reserved = ".webshare-upload-leftover.part"
+        cases = (
+            ("GET", f"/api/download?path={reserved}"),
+            ("GET", f"/api/info?path={reserved}"),
+            ("DELETE", f"/api/delete?path={reserved}&confirm={reserved}"),
+        )
+        for method, path in cases:
+            status, body = self.request(method, path)
+            self.assertEqual(status, 403, (method, path, body))
+            self.assertEqual(body["error"], "path_forbidden")
+
+    def test_reserved_names_cannot_be_created(self):
+        status, body = self.request("POST", "/api/mkdir?path=&name=.webshare-upload-x.part")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "invalid_name")
+        status, body = self.request(
+            "POST", "/api/rename?path=visible.txt&new_name=.webshare-upload-x.part"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "invalid_name")
+
+    def test_upload_with_reserved_filename_is_ignored(self):
+        boundary = "spool-up"
+        payload = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="current_path"\r\n\r\n\r\n'
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename=".webshare-upload-fake.part"\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\ndata\r\n--{boundary}--\r\n"
+        ).encode("utf-8")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request(
+            "POST",
+            "/upload",
+            body=payload,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(payload)),
+                "X-Webshare-Token": self.token,
+            },
+        )
+        response = conn.getresponse()
+        body = json.loads(response.read().decode("utf-8"))
+        conn.close()
+        self.assertEqual(response.status, 400)
+        self.assertEqual(body["error"], "no_files")
+        self.assertFalse((self.directory / ".webshare-upload-fake.part").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

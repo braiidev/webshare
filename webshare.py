@@ -17,7 +17,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.10.1"
+__version__ = "0.10.2"
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
@@ -225,6 +225,15 @@ def iter_multipart(stream, boundary, max_bytes):
             pass
 
 
+UPLOAD_TEMP_PREFIX = ".webshare-upload-"
+UPLOAD_TEMP_SUFFIX = ".part"
+
+
+def is_upload_temp(name):
+    """Identify the internal spool files, which must never surface in the API."""
+    return str(name).startswith(UPLOAD_TEMP_PREFIX) and str(name).endswith(UPLOAD_TEMP_SUFFIX)
+
+
 def safe_relative(raw_path, root):
     if raw_path is None:
         return ""
@@ -241,6 +250,8 @@ def safe_relative(raw_path, root):
             return None
         # Normalize drive-like and alternate delimiters just in case.
         if any(ch in part for ch in ("\\", ":", "\x00")):
+            return None
+        if is_upload_temp(part):
             return None
         parts.append(part)
     if not parts:
@@ -287,6 +298,8 @@ def strict_name(value):
     name = str(value or "")
     if not name or name in {".", ".."}:
         return None
+    if is_upload_temp(name):
+        return None
     if name != name.strip():
         return None
     if any(ch in name for ch in ("/", "\\", ":", "\x00")):
@@ -312,6 +325,8 @@ def lexical_relative(raw_path):
         if part == "..":
             return None
         if any(ch in part for ch in ("\\", ":", "\x00")):
+            return None
+        if is_upload_temp(part):
             return None
         parts.append(part)
     return "/".join(parts)
@@ -711,6 +726,8 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self.send_json_error(500, "read_failed", "No se pudo leer la carpeta.")
             return
+        # Internal spool files live here while an upload streams; keep them out of the view.
+        entries = [entry for entry in entries if not is_upload_temp(entry.name)]
         items = []
         for entry in entries[offset:offset + limit]:
             try:
@@ -801,9 +818,15 @@ class Handler(BaseHTTPRequestHandler):
         return os.path.basename(name.replace("\\", "/"))
 
     def spool_part(self, part):
-        """Stream a file part to a temporary file next to the shared root."""
+        """Stream a file part to a temporary file in the shared root.
+
+        The destination folder is only known after every field is parsed (parts
+        may arrive in any order), so files spool here first and are then renamed
+        into place in the same filesystem. The temporary name is reserved: it is
+        hidden from listings and rejected by every endpoint.
+        """
         fd, temp_name = tempfile.mkstemp(
-            prefix=".webshare-upload-", suffix=".part", dir=self.share_dir
+            prefix=UPLOAD_TEMP_PREFIX, suffix=UPLOAD_TEMP_SUFFIX, dir=self.share_dir
         )
         temp_path = Path(temp_name)
         try:
@@ -924,7 +947,7 @@ class Handler(BaseHTTPRequestHandler):
         uploaded = []
         try:
             for temp_path, filename in pending_files:
-                if not filename or filename in {".", ".."}:
+                if not filename or filename in {".", ".."} or is_upload_temp(filename):
                     temp_path.unlink(missing_ok=True)
                     continue
                 target = unique_path(target_dir, filename)

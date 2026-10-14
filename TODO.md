@@ -26,15 +26,15 @@
 
 ## v0.3 — Seguridad HTTP
 
-- [ ] Content-Security-Policy.
-- [ ] X-Content-Type-Options.
-- [ ] X-Frame-Options.
-- [ ] Referrer-Policy.
-- [ ] Cache-Control adecuado.
+- [x] Content-Security-Policy.
+- [x] X-Content-Type-Options.
+- [x] X-Frame-Options.
+- [x] Referrer-Policy.
+- [x] Cache-Control adecuado.
 
 ## v0.4 — Robustez de uploads
 
-- [ ] Límite configurable de tamaño.
+- [x] Límite configurable de tamaño.
 - [ ] Parser multipart con streaming o límite estricto previo.
 - [ ] Cleanup de archivos temporales.
 - [ ] Upload en modo solo lectura desactivado.

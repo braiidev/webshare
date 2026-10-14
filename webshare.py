@@ -14,7 +14,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 REPO_DIR = Path(__file__).resolve().parent
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
 BIN_PATH = Path.home() / ".local/bin/webshare"
@@ -102,6 +102,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404, "No encontrado")
 
     def do_POST(self):
+        if getattr(self.server, "read_only", False):
+            self.send_error(403, "Servidor en modo solo lectura")
+            return
         if urllib.parse.urlsplit(self.path).path != "/upload":
             self.send_error(404, "No encontrado")
             return
@@ -482,6 +485,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400, "Longitud inválida")
             return
 
+        max_upload = getattr(self.server, "max_upload_bytes", 5 * 1024 * 1024 * 1024)
+        if length <= 0:
+            self.send_error(400, "Solicitud de subida vacía o sin Content-Length")
+            return
+        if length > max_upload:
+            self.send_error(
+                413,
+                f"Subida demasiado grande ({length} bytes); límite: {max_upload} bytes",
+            )
+            return
+
         body = self.rfile.read(length)
         boundary_match = re.search(rb'boundary=([^;]+)', ctype.encode())
         if not boundary_match:
@@ -552,6 +566,19 @@ class Handler(BaseHTTPRequestHandler):
         user_agent = self.headers.get("User-Agent", "-")
         print(f"[webshare] {self.address_string()} - {fmt % args} UA={user_agent!r}")
 
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; img-src 'self' data:;",
+        )
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+        super().end_headers()
+
 
 def log_step(message):
     print(f"[webshare] {message}", flush=True)
@@ -613,6 +640,8 @@ def main():
     parser.add_argument("--dir", default=str(Path.home() / "Descargas"), help="carpeta compartida")
     parser.add_argument("--bind", default="0.0.0.0", help="dirección de escucha")
     parser.add_argument("--port", type=int, default=8000, help="puerto HTTP")
+    parser.add_argument("--read-only", action="store_true", help="deshabilita subidas y escrituras")
+    parser.add_argument("--max-upload-mb", type=int, default=5120, help="límite de subida en MB")
     parser.add_argument("--version", action="store_true", help="mostrar versión")
     parser.add_argument("--update", action="store_true", help="actualiza repositorio y symlink")
     parser.add_argument("--uninstall", action="store_true", help="desinstala symlink y repo opcional")
@@ -637,6 +666,8 @@ def main():
     httpd.bind_address = args.bind
     httpd.started_at = time.monotonic()
     httpd.started_at_wall = time.time()
+    httpd.read_only = args.read_only
+    httpd.max_upload_bytes = max(1, args.max_upload_mb) * 1024 * 1024
 
     hostname = socket.gethostname()
     try:
@@ -648,6 +679,9 @@ def main():
     print(f"  URL:   http://{local_ip}:{args.port}")
     print(f"  Bind:  {args.bind}:{args.port}")
     print(f"  Dir:   {directory}")
+    print(f"  Max upload: {args.max_upload_mb} MB")
+    if args.read_only:
+        print("  Modo: solo lectura")
     print("  Ctrl+C para detener.")
 
     server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)

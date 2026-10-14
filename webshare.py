@@ -14,7 +14,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 REPO_DIR = Path(__file__).resolve().parent
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
 BIN_PATH = Path.home() / ".local/bin/webshare"
@@ -321,6 +321,23 @@ class Handler(BaseHTTPRequestHandler):
       opacity: .6;
       cursor: wait;
     }}
+    #progressWrap {{
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255,255,255,.03);
+    }}
+    #progressWrap.hidden {{ display: none !important; }}
+    progress {{
+      width: 100%;
+      height: 8px;
+      accent-color: var(--accent);
+    }}
     .ok {{
       margin-bottom: 10px;
       padding: 10px 12px;
@@ -367,6 +384,11 @@ class Handler(BaseHTTPRequestHandler):
             <span id="dropText">Arrastra aquí o haz clic para elegir archivos</span>
             <input id="fileInput" type="file" name="file" multiple required>
           </label>
+          <div id="progressWrap" hidden>
+            <progress id="progress" max="100" value="0"></progress>
+            <span id="progressText">0%</span>
+            <span id="progressBytes" class="meta"></span>
+          </div>
           <div class="info">
             <span id="selectedCount">Ningún archivo seleccionado</span>
             <button id="submitBtn" type="submit">Subir</button>
@@ -406,6 +428,11 @@ class Handler(BaseHTTPRequestHandler):
     const selectedCount = document.getElementById('selectedCount');
     const submitBtn = document.getElementById('submitBtn');
     const status = document.getElementById('status');
+    const progressWrap = document.getElementById('progressWrap');
+    const progress = document.getElementById('progress');
+    const progressText = document.getElementById('progressText');
+    const progressBytes = document.getElementById('progressBytes');
+
 
     function updateSelected() {{
       const n = fileInput.files.length;
@@ -427,16 +454,60 @@ class Handler(BaseHTTPRequestHandler):
       if (e.dataTransfer.files.length) {{
         fileInput.files = e.dataTransfer.files;
         updateSelected();
-        form.requestSubmit();
+        form.dispatchEvent(new Event('submit', {{ cancelable: true, bubbles: true }}));
       }}
     }});
     fileInput.addEventListener('change', updateSelected);
 
-    form.addEventListener('submit', () => {{
+    form.addEventListener('submit', (event) => {{
+      event.preventDefault();
+      if (submitBtn.disabled) return;
+      const files = fileInput.files;
+      if (!files || !files.length) {{
+        if (status) status.textContent = 'Selecciona al menos un archivo.';
+        return;
+      }}
       submitBtn.disabled = true;
       submitBtn.textContent = 'Subiendo...';
       if (status) status.textContent = 'Subiendo archivo(s)...';
+      progressWrap.hidden = false;
+      progress.value = 0;
+      progressText.textContent = '0%';
+      progressBytes.textContent = '0 B / 0 B';
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', form.action, true);
+      xhr.upload.onprogress = (event) => {{
+        if (event.lengthComputable) {{
+          const percent = Math.round((event.loaded / event.total) * 100);
+          progress.value = percent;
+          progressText.textContent = percent + '%';
+          progressBytes.textContent = bytesLabel(event.loaded) + ' / ' + bytesLabel(event.total);
+        }}
+      }};
+      xhr.onload = () => {{
+        if (xhr.status >= 200 && xhr.status < 400) {{
+          window.location.assign(xhr.responseURL || ('/?path=' + encodeURIComponent(document.querySelector('input[name=current_path]').value) + '&uploaded=1'));
+        }} else {{
+          resetBusy('Subida fallida: ' + (xhr.statusText || xhr.status));
+          if (status) status.textContent = 'Error al subir (HTTP ' + xhr.status + ').';
+        }}
+      }};
+      xhr.onerror = () => resetBusy('Error de red durante la subida.');
+      xhr.send(new FormData(form));
     }});
+
+    function resetBusy(message) {{
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Subir';
+      if (status) status.textContent = message;
+    }}
+    function bytesLabel(bytes) {{
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MiB';
+    }}
+
 
     const params = new URLSearchParams(location.search);
     if (status && params.get('uploaded') === '1') {{
@@ -546,8 +617,18 @@ class Handler(BaseHTTPRequestHandler):
                 continue
 
             target = unique_path(target_dir, filename)
-            target.write_bytes(data)
-            uploaded.append(target.name)
+            temporary_name = f".{target.name}.tmp"
+            temporary_path = target.parent / temporary_name
+            try:
+                temporary_path.write_bytes(data)
+                os.replace(temporary_path, target)
+                uploaded.append(target.name)
+            except (OSError, RuntimeError):
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
 
         if not uploaded:
             self.send_error(400, "No se subió ningún archivo válido")

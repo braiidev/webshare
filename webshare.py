@@ -18,7 +18,7 @@ from pathlib import Path
 
 DEFAULT_DIR = Path.home() / "Descargas"
 
-__version__ = "0.13.0"
+__version__ = "0.13.1"
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
 INSTALL_ROOT = Path.home() / ".local/share/webshare"
@@ -44,6 +44,10 @@ CONNECTION_TIMEOUT = 30
 
 # Upper bound of concurrent client connections handled at once.
 MAX_CONNECTIONS = 64
+
+# Most directory entries we scan/sort for one listing. Directories larger than
+# this are reported with `truncated: true` instead of materializing everything.
+MAX_LIST_SCAN = 50000
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -252,6 +256,24 @@ def is_upload_temp(name):
 def redact_query_token(text):
     """Mask any `token=` value in a query string so it never reaches the logs."""
     return re.sub(r"(?i)([?&]token=)[^&\s]+", r"\1<redacted>", str(text))
+
+
+def scan_directory(directory, max_scan):
+    """List a directory sorted, without materializing more than `max_scan` entries.
+
+    Returns `(entries, truncated)`. Sorted files-first, then by lowercase name.
+    """
+    entries = []
+    truncated = False
+    for entry in directory.iterdir():
+        if is_upload_temp(entry.name):
+            continue
+        if len(entries) >= max_scan:
+            truncated = True
+            break
+        entries.append(entry)
+    entries.sort(key=lambda p: (p.is_file(), p.name.lower()))
+    return entries, truncated
 
 
 def safe_relative(raw_path, root):
@@ -826,12 +848,10 @@ class Handler(BaseHTTPRequestHandler):
         limit = max(1, min(limit, 5000))
 
         try:
-            entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+            entries, truncated = scan_directory(target, MAX_LIST_SCAN)
         except OSError:
             self.send_json_error(500, "read_failed", "No se pudo leer la carpeta.")
             return
-        # Internal spool files live here while an upload streams; keep them out of the view.
-        entries = [entry for entry in entries if not is_upload_temp(entry.name)]
         items = []
         for entry in entries[offset:offset + limit]:
             try:
@@ -850,6 +870,7 @@ class Handler(BaseHTTPRequestHandler):
             "total": len(entries),
             "offset": offset,
             "limit": limit,
+            "truncated": truncated,
             "entries": items,
         }
         self.send_json(200, payload)

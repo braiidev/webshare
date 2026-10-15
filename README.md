@@ -83,7 +83,7 @@ Valores por defecto:
 - `GET /version` — JSON con la versión.
 - `GET /api/status` — alias JSON del estado (uptime, nombre de la raíz, read-only, `token_required`, `crud_enabled`). No expone la ruta absoluta.
 - `GET /api/auth` — valida el token de escritura (`200 ok` si es correcto, `403` si no).
-- `GET /api/list?path=...` — listado JSON de una carpeta.
+- `GET /api/list?path=...` — listado JSON de una carpeta (`offset`/`limit`; `truncated: true` si supera el tope de escaneo).
 - `GET /api/info?path=...` — metadatos JSON de un archivo o carpeta.
 - `GET /api/download?path=...` — descarga en streaming (alias de `/download`).
 - `GET /download?path=...` — descarga en streaming (legacy).
@@ -207,6 +207,8 @@ valor por defecto (`~/Descargas`).
   de conexiones simultáneas.
 - Los temporales de subida huérfanos (por un cierre abrupto) se limpian al
   arrancar.
+- El listado de una carpeta está acotado (tope de escaneo); si se supera, la
+  respuesta lo marca con `truncated: true` en vez de cargar todo en memoria.
 - Modo solo lectura disponible.
 
 ## Actualización y desinstalación

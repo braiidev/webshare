@@ -25,6 +25,11 @@ atomizada (una sola cosa, verificable y etiquetable). La verdad se lee del
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v0.13.1` — **Listado acotado**: `/api/list` paginaba pero ordenaba todo el
+  directorio en memoria antes de recortar. Ahora el escaneo está limitado
+  (`MAX_LIST_SCAN`) y la respuesta marca `truncated: true` si se supera.
+  76/76 tests.
+  - estado: `HECHO` · tag `v0.13.1` (ver `git log`)
 - [x] `v0.13.0` — **Validación del header `Host` (anti DNS rebinding)**: se
   aceptan IP literales, `localhost` o el valor de `--bind`; cualquier otro
   dominio responde `400 invalid_host`. Documenta además que el instalador confía

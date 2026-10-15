@@ -56,6 +56,17 @@ class Paths(unittest.TestCase):
         self.assertEqual(webshare.Handler.sys_version, "")
         self.assertTrue(webshare.Handler.server_version.startswith("webshare/"))
 
+    def test_scan_directory_caps_and_flags(self):
+        root = Path(tempfile.mkdtemp())
+        for i in range(5):
+            (root / f"f{i}.txt").write_text("x", encoding="utf-8")
+        entries, truncated = webshare.scan_directory(root, 3)
+        self.assertEqual(len(entries), 3)
+        self.assertTrue(truncated)
+        entries, truncated = webshare.scan_directory(root, 10)
+        self.assertEqual(len(entries), 5)
+        self.assertFalse(truncated)
+
 
 
 
@@ -259,6 +270,7 @@ class ApiIntegrationWebShare(unittest.TestCase):
         listing = json.loads(response.read().decode("utf-8"))
         self.assertEqual(response.status, 200)
         self.assertTrue(any(item["name"] == "api-smoke.txt" for item in listing["entries"]))
+        self.assertFalse(listing["truncated"])
 
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         conn.request("GET", "/api/download?path=api-smoke.txt")

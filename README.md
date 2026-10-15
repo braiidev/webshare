@@ -234,6 +234,6 @@ El plan por etapas y el estado del proyecto viven en [`TODO.md`](TODO.md)
 
 ## Licencia
 
-Pendiente definir por el mantenedor. Los recursos de terceros empaquetados en
-`static/vendor` (Bootstrap, Bootswatch Simplex, Bootstrap Icons) son MIT; ver
-[`static/vendor/LICENSE.txt`](static/vendor/LICENSE.txt).
+MIT. Ver [`LICENSE`](LICENSE). El proyecto es de uso libre; los recursos de
+terceros empaquetados en `static/vendor` (Bootstrap, Bootswatch Simplex,
+Bootstrap Icons) son MIT; ver [`static/vendor/LICENSE.txt`](static/vendor/LICENSE.txt).

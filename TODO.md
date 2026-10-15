@@ -11,9 +11,7 @@ atomizada (una sola cosa, verificable y etiquetable). La verdad se lee del
 
 > Tareas planificadas, todavía no iniciadas.
 
-- [ ] `v1.0.0` — **Release estable**: suite completa en verde, instalador
-  verificado de punta a punta, licencia definida y notas de release.
-  - estado: `PENDIENTE`
+- *(vacío)*
 
 ## DOING
 
@@ -25,6 +23,10 @@ atomizada (una sola cosa, verificable y etiquetable). La verdad se lee del
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v1.0.0` — **Release estable**: cierre del hardening (todas las auditorías
+  cerradas), licencia **MIT** (`LICENSE`) y README alineado, 76/76 tests e
+  instalador verificado 18/18. Tag anotado + GitHub Release.
+  - estado: `HECHO` · tag `v1.0.0` (ver `git log`)
 - [x] `v0.13.1` — **Listado acotado**: `/api/list` paginaba pero ordenaba todo el
   directorio en memoria antes de recortar. Ahora el escaneo está limitado
   (`MAX_LIST_SCAN`) y la respuesta marca `truncated: true` si se supera.

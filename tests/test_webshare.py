@@ -717,6 +717,7 @@ class FlowWebShare(unittest.TestCase):
         html = payload.decode("utf-8")
         self.assertIn("/static/js/main.js", html)
         self.assertIn("/static/css/style.css", html)
+        self.assertIn("/static/favicon.svg", html)
         self.assertIn("data-bs-theme", html)
         self.assertNotIn(self.token, html)
 
@@ -726,6 +727,7 @@ class FlowWebShare(unittest.TestCase):
             ("/static/js/main.js", "text/javascript"),
             ("/static/js/ui.js", "text/javascript"),
             ("/static/vendor/bootstrap.min.css", "text/css"),
+            ("/static/favicon.svg", "image/svg+xml"),
         ):
             status, headers, payload, _ = self.request("GET", path)
             self.assertEqual(status, 200, path)

@@ -23,6 +23,12 @@ atomizada (una sola cosa, verificable y etiquetable). La verdad se lee del
 
 > Tareas terminadas, con commit finalizado y tag. Orden: más reciente arriba.
 
+- [x] `v1.1.0` — **Favicon / logo**: `static/favicon.svg` (cuadro negro redondeado
+  con "ws" en el primary de Simplex `#d9230f`, centrado) enlazado desde
+  `static/index.html` con `rel="icon"`. El servidor lo sirve como `image/svg+xml`
+  desde `/static/` (sin tocar el backend: el ruteo estático es genérico).
+  76/76 tests.
+  - estado: `HECHO` · tag `v1.1.0` (ver `git log`)
 - [x] `v1.0.0` — **Release estable**: cierre del hardening (todas las auditorías
   cerradas), licencia **MIT** (`LICENSE`) y README alineado, 76/76 tests e
   instalador verificado 18/18. Tag anotado + GitHub Release.
